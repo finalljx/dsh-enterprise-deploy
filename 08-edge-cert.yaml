@@ -1,0 +1,11 @@
+# 步骤 8：边缘通配证书
+# 必须放在 Istio Ingress Gateway 所在的命名空间
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: dsh-wildcard, namespace: istio-system }
+spec:
+  secretName: dsh-wildcard-tls
+  issuerRef: { name: dsh-internal-ca, kind: ClusterIssuer }
+  dnsNames: ["*.dsh.corp"]
+  duration: 2160h
+  renewBefore: 360h

@@ -1,0 +1,16 @@
+# 步骤 2：Kata 微虚拟机运行时（Rust runtime + Cloud Hypervisor）
+# handler 必须与 kata-deploy 安装的 shims 键一致：clh-runtime-rs → kata-clh-runtime-rs。
+# Kata 4.0 起 runtime-rs 为默认；不带后缀的 kata-clh 是已弃用的 Go 运行时，不要用。
+# 验证：kubectl get runtimeclass kata-clh-runtime-rs
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-clh-runtime-rs
+handler: kata-clh-runtime-rs
+overhead:
+  podFixed:
+    cpu: "250m"
+    memory: "160Mi"
+scheduling:
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"

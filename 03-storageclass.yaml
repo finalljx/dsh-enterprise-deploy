@@ -1,0 +1,17 @@
+# 步骤 3：存储类
+# 只示范 RWO 块存储。若你要用 CephFS（RWX），把 storageClassName 换成它，
+# 但必须先确认它支持 flock —— NFSv3 不支持，DSH 的单写者排他会失效。
+#
+# 若集群已有合适的 StorageClass，删掉本文件，改为控制面的 DSH_STORAGE_CLASS 环境变量。
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: dsh-rbd
+provisioner: rbd.csi.ceph.com        # 换成你的 CSI provisioner
+reclaimPolicy: Delete                # 绝不用 Retain：卷会被复用
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  pool: dsh
+  imageFeatures: layering
+  # 其余参数按你的 Ceph 集群补全（clusterID / csi.storage.k8s.io/*）

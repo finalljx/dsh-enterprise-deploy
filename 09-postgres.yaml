@@ -1,0 +1,71 @@
+# 步骤 14：控制面数据库
+#
+# 这里是一份能跑起来的单实例，够做验收环境。
+# 生产请用托管 Postgres（HA、自动备份、PITR），只把 DATABASE_URL 换掉。
+apiVersion: v1
+kind: Secret
+metadata: { name: dsh-postgres, namespace: dsh-system }
+type: Opaque
+stringData:
+  # 生产请改为 ExternalSecret / sealed-secrets，不要提交明文
+  password: "CHANGE_ME_STRONG_PASSWORD"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: dsh-postgres, namespace: dsh-system }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: dsh-rbd
+  resources: { requests: { storage: 20Gi } }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: dsh-postgres, namespace: dsh-system }
+spec:
+  serviceName: dsh-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: dsh-postgres }
+  template:
+    metadata:
+      labels: { app: dsh-postgres }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports: [{ containerPort: 5432 }]
+          env:
+            - { name: POSTGRES_DB, value: dsh }
+            - { name: POSTGRES_USER, value: dsh }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: dsh-postgres, key: password } }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "dsh", "-d", "dsh"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits:   { cpu: "2", memory: 2Gi }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: dsh-postgres }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: dsh-postgres, namespace: dsh-system }
+spec:
+  selector: { app: dsh-postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+# schema（幂等）。执行：
+#   kubectl -n dsh-system exec -i dsh-postgres-0 -- \
+#     psql -U dsh -d dsh < control/schema.sql

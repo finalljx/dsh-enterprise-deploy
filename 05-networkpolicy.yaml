@@ -1,0 +1,56 @@
+# 步骤 5：网络
+#
+# 三条约束：
+#   1. 只有 dsh-router 能进用户 pod
+#   2. 用户 pod 之间禁止互访
+#   3. 出网只允许白名单（模型网关、registry、内部系统、控制面、DNS）
+#
+# 验证：
+#   kubectl exec -n dsh-users deploy/dsh-alice -- curl -m3 http://dsh-router.dsh-system.svc:8080  # 应超时/拒绝
+#   kubectl exec -n dsh-users deploy/dsh-alice -- getent hosts kubernetes.default             # 应失败
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny, namespace: dsh-users }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: dsh-user-allow, namespace: dsh-users }
+spec:
+  podSelector:
+    matchLabels: { app: dsh-user }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # 只有 router 能进；同命名空间的 pod 之间默认被 default-deny 挡住
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dsh-system }
+          podSelector:
+            matchLabels: { app: dsh-router }
+      ports:
+        - { protocol: TCP, port: 8443 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: dsh-system }
+          podSelector:
+            matchLabels: { app: dsh-control }
+      ports:
+        - { protocol: TCP, port: 8080 }
+    # 企业服务：按实际网段替换
+    - to:
+        - ipBlock:
+            cidr: 10.20.0.0/16          # 模型网关 + 私有 registry + 内部系统
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }

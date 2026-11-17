@@ -1,0 +1,79 @@
+# 步骤 9：控制面
+#
+# 职责：
+#   POST /internal/register   pod 启动时上报 {subject, podIP, publicHost, principalUri, launchToken}
+#   GET  /internal/lookup     router 按 subject 查目标
+#   GET  /healthz
+#
+# 这是内存实现，重启即丢。生产替换为 Postgres/Redis，见 control/README.md。
+#
+# 初始化密钥：
+#   kubectl -n dsh-system create secret generic dsh-control-auth \
+#     --from-literal=admin-token="$(openssl rand -hex 32)" \
+#     --from-literal=router-token="$(openssl rand -hex 32)" \
+#     --from-literal=register-token="$(openssl rand -hex 32)"
+#
+# 用户 pod 需要 register-token，而 Secret 不能跨命名空间引用，
+# 所以在 dsh-users 放一份同值的副本：
+#   kubectl -n dsh-users create secret generic dsh-control-auth \
+#     --from-literal=register-token="<同上>"
+#
+# 数据库连接串：
+#   kubectl -n dsh-system create secret generic dsh-postgres-dsn \
+#     --from-literal=dsn="postgres://dsh:<password>@dsh-postgres.dsh-system.svc.cluster.local:5432/dsh?sslmode=disable"
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dsh-control, namespace: dsh-system, labels: { app: dsh-control } }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: dsh-control }
+  template:
+    metadata:
+      labels: { app: dsh-control }
+    spec:
+      serviceAccountName: dsh-control
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: control
+          image: registry.corp/dsh-control:0.1.0
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: dsh-control-auth, key: admin-token } }
+            - name: ROUTER_TOKEN
+              valueFrom: { secretKeyRef: { name: dsh-control-auth, key: router-token } }
+            - name: REGISTER_TOKEN
+              valueFrom: { secretKeyRef: { name: dsh-control-auth, key: register-token } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: dsh-postgres-dsn, key: dsn } }
+            # 开通用户的集群级约定（管理台不填这些）
+            - name: DSH_NAMESPACE
+              value: dsh-users
+            - name: DSH_BASE_DOMAIN
+              value: dsh.corp
+            - name: DSH_IMAGE
+              value: registry.corp/dsh:0.2.1-alpha.4
+            - name: DSH_STORAGE_CLASS
+              value: dsh-rbd
+            - name: DSH_RUNTIME_CLASS
+              value: kata-clh-runtime-rs
+            - name: DSH_ISSUER
+              value: dsh-internal-ca
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: dsh-control, namespace: dsh-system, labels: { app: dsh-control } }
+spec:
+  selector: { app: dsh-control }
+  ports: [{ port: 8080, targetPort: 8080 }]

@@ -1,0 +1,33 @@
+# 本地开发镜像：从仓库本地 plugin 目录安装，不依赖私有 registry。
+# 构建上下文必须是 dsh-enterprise-deploy/ 根目录：
+#   docker build -f Dockerfile.dev -t dsh/dsh:local .
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends jq curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm i -g @deepseek-ai/dsh@0.2.1-alpha.4 && npm cache clean --force
+# node:22 官方镜像里已经有 uid 1000 的 node 用户，useradd -u 1000 会报 UID 冲突；
+# manifest 要求 runAsUser: 1000，所以复用该用户、改名并把家目录挪到 /home/dsh
+RUN usermod -l dsh -d /home/dsh -m -s /bin/bash node
+
+ENV HOME=/home/dsh NODE_ENV=production
+COPY image/init-home.sh image/entrypoint.sh /opt/dsh/
+COPY image/profile/cordis.patch.yml /opt/dsh/profile/cordis.patch.yml
+RUN chmod 0755 /opt/dsh/*.sh
+
+# 模型端点：开发时指向真实可用的 Messages 兼容服务
+ARG MODEL_BASE_URL=https://api.deepseek.com/anthropic
+RUN sed -i -e "s#https://llm-gw.corp/anthropic#${MODEL_BASE_URL}#" \
+           -e "s#apiKeyEnv: DSH_MODEL_TOKEN#apiKeyEnv: DEEPSEEK_API_KEY#" \
+           /opt/dsh/profile/cordis.patch.yml
+
+COPY plugin /opt/plugin
+RUN mkdir -p /opt/dsh/profile-seed \
+ && (DSH_HOME=/opt/dsh/profile-seed dsh plugin --profile web add /opt/plugin \
+     || echo "WARN: activity plugin install failed; continuing without it")
+
+USER 1000
+EXPOSE 8443
+ENTRYPOINT ["/opt/dsh/entrypoint.sh"]

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Brand}} · 管理台</title>
+<link rel="stylesheet" href="/_dsh/assets/base.css">
+<link rel="stylesheet" href="/_dsh/assets/admin.css">
+<script src="/_dsh/assets/admin.js" defer></script>
+</head>
+<body class="admin-body">
+<main class="admin" id="admin" data-base-domain="{{.BaseDomain}}" data-admin="{{.Admin}}">
+  <header class="admin-head">
+    <div>
+      <div class="brand">{{.Brand}}</div>
+      <h1>管理台</h1>
+    </div>
+    <div class="who">
+      <span class="who-name">{{.Admin}}</span>
+      <form method="post" action="/_dsh/logout">
+        <button type="submit" class="link">退出</button>
+      </form>
+    </div>
+  </header>
+
+  <section class="card panel">
+    <div class="panel-head">
+      <h2>新增用户</h2>
+    </div>
+    <p class="detail">提交后由控制面创建模型 Secret、PVC、Certificate、Deployment，并登记到路由表。
+      创建后由回收器拉起，首次进入通常需要 10–20 秒。</p>
+    <form id="create-form" class="form-grid" novalidate>
+      <label>企业邮箱
+        <input id="email" name="email" type="email" placeholder="alice@corp" autocomplete="off" spellcheck="false" required>
+      </label>
+      <label>访问地址
+        <input id="host" name="host" type="text" readonly tabindex="-1">
+      </label>
+      <label>等级
+        <select id="tier" name="tier">
+          <option value="T1" selected>T1 · 标准</option>
+          <option value="T0">T0 · 受限</option>
+          <option value="T2">T2 · 高配</option>
+        </select>
+      </label>
+      <label>模型密钥
+        <input id="model-token" name="modelToken" type="password" placeholder="sk-..." autocomplete="new-password" required>
+      </label>
+      <div class="actions">
+        <button class="btn" type="submit" id="submit">创建用户</button>
+      </div>
+    </form>
+    <p class="msg" id="form-msg" hidden role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card panel">
+    <div class="panel-head">
+      <h2>用户</h2>
+      <div class="actions">
+        <button class="ghost small" id="refresh" type="button">刷新</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>用户</th>
+            <th>地址</th>
+            <th>状态</th>
+            <th>Pod</th>
+            <th>最近活动</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="detail" id="empty" hidden>还没有用户，先在上面新增一个。</p>
+  </section>
+</main>
+</body>
+</html>

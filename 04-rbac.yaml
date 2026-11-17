@@ -1,0 +1,49 @@
+# 步骤 4：服务账号与权限
+#
+# 关键约束：终端用户没有任何集群权限。
+# 只有 control 的 ServiceAccount 能创建 PVC / Deployment / Certificate。
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: dsh-control, namespace: dsh-system }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: dsh-router, namespace: dsh-system }
+---
+# 用户 pod 的身份占位，不授予任何权限
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: dsh-workload, namespace: dsh-users }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: dsh-provisioner, namespace: dsh-users }
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # 开通用户时写模型凭据 Secret
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: dsh-provisioner, namespace: dsh-users }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dsh-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: dsh-control
+    namespace: dsh-system

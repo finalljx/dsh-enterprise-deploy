@@ -1,0 +1,77 @@
+# 步骤 6：准入控制
+#
+# 目标：让「pod 挂错卷」在 API 层就不可能发生，而不是等到运行时才发现。
+#
+# 做法：
+#   provisioner 写三个事实：pod 标签 dsh.corp/user、pod 注解 dsh.corp/home-claim、PVC 标签 dsh.corp/user
+#   准入策略强制 注解 == 实际挂载的 claimName
+#   另一条策略强制 PVC 必须带 dsh.corp/user
+#
+# 验证：
+#   kubectl apply -f - <<'Y'
+#   apiVersion: v1
+#   kind: Pod
+#   metadata: { name: bad, namespace: dsh-users, labels: { dsh.corp/user: alice_corp } }
+#   spec: { containers: [{name: c, image: busybox}], volumes: [{name: h, persistentVolumeClaim: {claimName: dsh-home-bob}}] }
+#   Y
+#   # 期望：denied，提示 PVC 必须等于 dsh.corp/home-claim
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: { name: dsh-pod-home-binding }
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+    namespaceSelector:
+      matchLabels: { kubernetes.io/metadata.name: dsh-users }
+  variables:
+    - name: user
+      expression: "object.metadata.?labels['dsh.corp/user'].orValue('')"
+    - name: claim
+      expression: "object.metadata.?annotations['dsh.corp/home-claim'].orValue('')"
+  validations:
+    - expression: "variables.user != ''"
+      message: "pod 必须带 dsh.corp/user 标签（userId 的 @ 换成 _，如 alice_corp）"
+    - expression: "object.metadata.?annotations['dsh.corp/principal'].orValue('').contains('@')"
+      message: "pod 必须带 dsh.corp/principal 注解（规范身份，含 @）"
+    - expression: "variables.claim.startsWith('dsh-home-')"
+      message: "pod 必须带 dsh.corp/home-claim 注解，且以 dsh-home- 开头"
+    - expression: |
+        object.spec.volumes.all(v,
+          !has(v.persistentVolumeClaim) || v.persistentVolumeClaim.claimName == variables.claim)
+      message: "挂载的 PVC 必须等于 dsh.corp/home-claim"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: { name: dsh-pod-home-binding }
+spec:
+  policyName: dsh-pod-home-binding
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: { name: dsh-pvc-owner-label }
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["persistentvolumeclaims"]
+    namespaceSelector:
+      matchLabels: { kubernetes.io/metadata.name: dsh-users }
+  validations:
+    - expression: "object.metadata.?labels['dsh.corp/user'].orValue('') != ''"
+      message: "PVC 必须带 dsh.corp/user 标签"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: { name: dsh-pvc-owner-label }
+spec:
+  policyName: dsh-pvc-owner-label
+  validationActions: [Deny]

@@ -1,0 +1,34 @@
+# 步骤 11：入口网关
+#
+# 只做两件事：终止 TLS（通配证书）、把 *.dsh.corp 送到 router。
+# 不做用户映射 —— 那是 router 的职责，见 checklist §5。
+#
+# 前置：
+#   istioctl install --set meshConfig.defaultConfig.gatewayTopology.numTrustedProxies=1
+#   numTrustedProxies 必须设，否则 Istio 会改写 Host，router 的 Host 校验会失败。
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata: { name: dsh-gateway, namespace: dsh-system }
+spec:
+  selector: { istio: ingressgateway }
+  servers:
+    - port: { number: 443, name: https, protocol: HTTPS }
+      tls:
+        mode: SIMPLE
+        credentialName: dsh-wildcard-tls    # 与 08-edge-cert.yaml 的 secretName 一致
+      hosts: ["*.dsh.corp"]
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata: { name: dsh-router, namespace: dsh-system }
+spec:
+  hosts: ["*.dsh.corp"]
+  gateways: ["dsh-gateway"]
+  http:
+    - timeout: 0s          # 长 turn：不要让默认 15s 超时切断
+      retries:
+        attempts: 0        # 不要自动重试：一个 prompt 发两次会重复执行
+      route:
+        - destination:
+            host: dsh-router.dsh-system.svc.cluster.local
+            port: { number: 8080 }

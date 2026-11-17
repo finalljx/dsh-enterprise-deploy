@@ -1,0 +1,10 @@
+# 编译产物
+/bin/
+*.exe
+*.out
+coverage.out
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/

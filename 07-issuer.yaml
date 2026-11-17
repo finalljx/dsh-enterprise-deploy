@@ -1,0 +1,16 @@
+# 步骤 7：内部 CA
+# 用于签发：每个用户 pod 的服务端证书（绑定身份）
+# 以及网关到 pod 的客户端证书（router 出示）
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata: { name: dsh-internal-ca }
+spec:
+  ca:
+    secretName: dsh-internal-ca-keypair    # 用你的 CA 初始化，见下
+---
+# 初始化（只做一次）：
+#   openssl req -x509 -newkey rsa:4096 -sha256 -days 3650 -nodes \
+#     -keyout ca.key -out ca.crt -subj "/CN=DSH Internal CA"
+#   kubectl create secret tls dsh-internal-ca-keypair -n cert-manager --cert=ca.crt --key=ca.key
+#
+# 验证：kubectl get clusterissuer dsh-internal-ca -o jsonpath='{.status.conditions[0].type}'

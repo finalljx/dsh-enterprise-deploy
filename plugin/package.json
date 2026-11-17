@@ -1,0 +1,15 @@
+{
+  "name": "@corp/dsh-plugin-activity",
+  "version": "1.0.0",
+  "description": "Report session turn activity to the enterprise control plane for idle reclamation",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "README.md"],
+  "license": "MIT",
+  "publishConfig": { "registry": "https://nexus.corp/repository/npm/" },
+  "keywords": ["dsh", "dsh-plugin", "cordis"]
+}

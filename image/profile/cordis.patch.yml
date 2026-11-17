@@ -1,0 +1,28 @@
+# 企业 profile：平台拥有，每次启动覆盖，用户不可修改
+#
+# 1. 关 HMR：生产不需要文件监听
+- id: hmr
+  disabled: true
+
+# 2. 关插件安装：plugin-manager 同时提供 Web 侧栏和 agent 工具，
+#    不禁用的话 agent 可以安装任意包并以 Host 权限执行
+- id: plugin-manager
+  disabled: true
+
+# 3. 模型走内网网关（Messages 兼容）
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  config:
+    baseURL: https://llm-gw.corp/anthropic
+    apiKeyEnv: DSH_MODEL_TOKEN
+    # 网关提供的模型 id 需要显式声明目录（按实际填写）
+    # models:
+    #   - id: deepseek-agent
+    #     displayName: DeepSeek Agent
+    #     contextWindow: 131072
+    #     maxOutputTokens: 8192
+
+# 4. 活动上报：把 turn 状态报给控制面，供空闲回收使用
+- insert:
+    - id: activity-reporter
+      name: '@corp/dsh-plugin-activity'

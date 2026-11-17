@@ -1,0 +1,95 @@
+# 步骤 10：路由服务
+#
+# 职责（顺序不能变）：
+#   1. 从 HMAC 会话 cookie 取 subject，没有就跳 SSO
+#   2. 向 control 查 subject → 目标
+#   3. 校验请求 Host 与目标的 publicHost 一致，不一致 403
+#   4. 用 mTLS 连 pod，校验对端证书 URI SAN
+#   5. 网关侧持有 DSH cookie，代理请求（含 WebSocket）
+#
+# 初始化：
+#   kubectl -n dsh-system create secret generic dsh-router-auth --from-literal=cookie-key="$(openssl rand -hex 32)"
+#
+# 客户端证书（router 出示给 pod）：
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: { name: dsh-router-client, namespace: dsh-system }
+spec:
+  secretName: dsh-router-client-tls
+  issuerRef: { name: dsh-internal-ca, kind: ClusterIssuer }
+  commonName: dsh-router
+  usages: [client auth]
+  duration: 720h
+  renewBefore: 120h
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: dsh-router, namespace: dsh-system, labels: { app: dsh-router } }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: dsh-router }
+  template:
+    metadata:
+      labels: { app: dsh-router }
+    spec:
+      serviceAccountName: dsh-router
+      securityContext: { runAsNonRoot: true, runAsUser: 10002, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: router
+          image: registry.corp/dsh-router:0.1.0
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: CONTROL_URL
+              value: http://dsh-control.dsh-system.svc.cluster.local:8080
+            - name: SSO_URL
+              value: https://sso.corp/login
+            - name: COOKIE_KEY
+              valueFrom: { secretKeyRef: { name: dsh-router-auth, key: cookie-key } }
+            - name: ROUTER_TOKEN
+              valueFrom: { secretKeyRef: { name: dsh-control-auth, key: router-token } }
+            - name: CA_FILE
+              value: /tls/ca/tls.crt
+            - name: CLIENT_CERT
+              value: /tls/client/tls.crt
+            - name: CLIENT_KEY
+              value: /tls/client/tls.key
+            - name: POD_PORT
+              value: "8443"
+            # 登录页与等待页的品牌名；LOGIN_MODE=direct 可跳过登录页直跳 SSO
+            - name: DSH_BRAND
+              value: "DSH 工作区"
+            - name: LOGIN_MODE
+              value: page
+            # 管理台：ADMIN_SUBJECTS 是逗号分隔的 subject 白名单，留空则整页关闭
+            - name: ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: dsh-control-auth, key: admin-token } }
+            - name: ADMIN_SUBJECTS
+              value: ""
+            - name: DSH_BASE_DOMAIN
+              value: dsh.corp
+          volumeMounts:
+            - { name: ca, mountPath: /tls/ca, readOnly: true }
+            - { name: client, mountPath: /tls/client, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: ca
+          secret: { secretName: dsh-internal-ca-keypair, defaultMode: 0444 }
+        - name: client
+          secret: { secretName: dsh-router-client-tls, defaultMode: 0400 }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: dsh-router, namespace: dsh-system, labels: { app: dsh-router } }
+spec:
+  selector: { app: dsh-router }
+  ports: [{ port: 8080, targetPort: 8080 }]

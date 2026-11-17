@@ -1,0 +1,23 @@
+# 步骤 1：命名空间
+# dsh-system  控制面、路由、入口
+# dsh-users   用户 pod 与卷
+# dsh-untrusted  T0（实习生）专用节点池的工作负载
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dsh-system
+  labels: { pod-security.kubernetes.io/enforce: restricted }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dsh-users
+  labels: { pod-security.kubernetes.io/enforce: restricted }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dsh-untrusted
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    dsh.corp/tier: T0
