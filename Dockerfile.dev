@@ -7,7 +7,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends jq curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-RUN npm i -g @deepseek-ai/dsh@0.2.1-alpha.4 && npm cache clean --force
+# pnpm 是 `dsh plugin add` 的安装器，node 镜像里没有，缺了插件会静默装不上
+RUN npm i -g @deepseek-ai/dsh@0.2.1-alpha.4 pnpm@10 && npm cache clean --force
 # node:22 官方镜像里已经有 uid 1000 的 node 用户，useradd -u 1000 会报 UID 冲突；
 # manifest 要求 runAsUser: 1000，所以复用该用户、改名并把家目录挪到 /home/dsh
 RUN usermod -l dsh -d /home/dsh -m -s /bin/bash node
@@ -25,8 +26,8 @@ RUN sed -i -e "s#https://llm-gw.corp/anthropic#${MODEL_BASE_URL}#" \
 
 COPY plugin /opt/plugin
 RUN mkdir -p /opt/dsh/profile-seed \
- && (DSH_HOME=/opt/dsh/profile-seed dsh plugin --profile web add /opt/plugin \
-     || echo "WARN: activity plugin install failed; continuing without it")
+ && DSH_HOME=/opt/dsh/profile-seed dsh plugin --profile web add /opt/plugin \
+ && test -d /opt/dsh/profile-seed/profiles/web/node_modules/@corp/dsh-plugin-activity
 
 USER 1000
 EXPOSE 8443

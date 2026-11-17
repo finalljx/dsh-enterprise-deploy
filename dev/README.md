@@ -36,6 +36,31 @@ go version    # ≥ 1.22，用来构建 control / router
 
 k3s 版本必须 ≥ 1.30（`ValidatingAdmissionPolicy` GA）。脚本默认用 `rancher/k3s:v1.31.5-k3s1`。
 
+### 镜像加速器
+
+k3s 节点默认直连 Docker Hub。国内基本拉不动，而 `pause` / `busybox`（PVC 助手）/
+`klipper-lb`（LoadBalancer）这些都必须在集群里能拉到，否则 pod 会卡在 `ImagePullBackOff`。
+
+`up.sh` 会在**建集群时**把加速器写进 `dev/render/registries.yaml` 并通过
+`--registry-config` 传给 k3d（与 `--registry-use` 的私有 registry 条目自动合并）：
+
+```sh
+export DOCKER_MIRROR=https://docker.m.daocloud.io   # 默认值
+export DOCKER_MIRROR=                               # 置空 = 不配加速器
+```
+
+**已经建好的集群补不了这个配置**：k3s 只在启动时读 `registries.yaml`，而重启 k3d 节点
+会换掉容器 IP，k3s 缓存的 kubelet 服务端证书仍指向旧 IP，之后 `exec` / `logs` /
+`port-forward` 会全部报 `x509: certificate is valid for ...`。所以只能重建：
+
+```sh
+k3d cluster delete dsh && ./dev/up.sh
+```
+
+同理，遇到 `ImagePullBackOff` 时不要用 `docker restart k3d-dsh-agent-0` 来"修"，重启后
+执行通道就断了。要临时补镜像，用宿主机拉 + `k3d image import`。
+
+
 ## 三、一条命令
 
 ```sh
@@ -175,6 +200,27 @@ kubectl -n dsh-system set env deploy/dsh-router LOGIN_MODE=direct
 
 关键点：**ticket 的签名与校验走的是正式代码路径**，只有"谁来签发"被替换了。
 所以这个流程验证的是真实的认证逻辑，不是旁路。
+
+### 本地验多个用户
+
+假 IdP 默认只签发 `DEV_SUBJECT`。而会话 cookie 是 host-only 的，如果只按默认身份签，
+你访问 `usera.dsh.corp` 会拿到 alice 的 cookie，随后被 Host 与主体一致性检查拦成 **403**
+（这是隔离在起作用，不是 bug）。
+
+所以 `/_dev/sso` 支持按子域决定身份：
+
+```
+访问 http://usera.dsh.corp/
+router → 302 /_dev/sso?...&subject=usera%40corp
+```
+
+规则：slug 取主机名第一段，域后缀沿用 `DEV_SUBJECT` 里 `@` 之后的部分
+（`usera.dsh.corp` + `DEV_SUBJECT=alice@corp` → `usera@corp`）。
+也可以手动指定：`/_dev/sso?subject=bob@corp&return=...`。
+
+生产（`DEV_SUBJECT` 为空）不会从 Host 推导身份，这段逻辑不生效。
+换了代码后如果浏览器还留着旧的 403 会话，用 DevTools 清掉 `usera.dsh.corp` 的
+`dsh_sess`，或在页面里点「退出登录」后重新进。
 
 `up.sh` 已经设好：`DEV_SUBJECT=alice@corp PUBLIC_SCHEME=http SSO_URL=/_dev/sso COOKIE_SECURE=false`。
 

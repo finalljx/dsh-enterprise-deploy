@@ -16,6 +16,10 @@ cd "$(dirname "$0")/.."
 
 CLUSTER="${CLUSTER:-dsh}"
 K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.31.5-k3s1}"
+# docker.io 加速器。k3s 节点默认直连 Docker Hub，国内基本拉不动，而 pause /
+# busybox / klipper-lb / cert-manager 这些基础镜像又必须能拉。
+# 设为空串可以关掉（内网换成自己的代理仓库地址即可）。
+DOCKER_MIRROR="${DOCKER_MIRROR:-https://docker.m.daocloud.io}"
 NS_SYS=dsh-system
 NS_USERS=dsh-users
 ADMIN_TOKEN="$(openssl rand -hex 16)"
@@ -64,8 +68,34 @@ if [ "$REGISTRY_MODE" = 1 ] && [ -n "$K3D_REGISTRY" ]; then
     k3d registry create "$K3D_REGISTRY" --port "${DSH_REGISTRY##*:}"
   fi
 fi
+mkdir -p dev/render
+if [ -n "$DOCKER_MIRROR" ]; then
+  cat > dev/render/registries.yaml <<YAML
+mirrors:
+  docker.io:
+    endpoint:
+      - ${DOCKER_MIRROR}
+YAML
+fi
+
+# 已有集群没法安全补加速器：k3s 只在启动时读 registries.yaml，而重启 k3d 节点会
+# 换掉容器 IP，k3s 缓存的 kubelet 服务端证书仍指向旧 IP —— 之后 exec/logs/port-forward
+# 全部报 x509 不匹配。所以这里只提示，不自动改。
+warn_missing_mirror() {
+  [ -n "$DOCKER_MIRROR" ] || return 0
+  if docker exec "k3d-${CLUSTER}-server-0" sh -c "grep -q '${DOCKER_MIRROR}' /etc/rancher/k3s/registries.yaml" 2>/dev/null; then
+    return 0
+  fi
+  cat <<MSG
+WARN: 集群 $CLUSTER 没有 docker.io 加速器，pause / busybox / klipper-lb 这类基础镜像可能拉不动。
+      老集群补不进去（重启节点会让 kubelet 证书对不上），只能重建：
+        k3d cluster delete $CLUSTER && ./dev/up.sh
+MSG
+}
+
 if [ "$CLUSTER_EXISTS" = 1 ]; then
-  echo "集群 $CLUSTER 已存在，跳过"
+  echo "集群 $CLUSTER 已存在，跳过创建"
+  warn_missing_mirror
   if [ "$REGISTRY_MODE" = 1 ]; then
     echo "WARN: 已有集群不会自动挂上 registry。若它不是用 --registry-use 建的，pod 会拉不到镜像，"
     echo "      先 k3d cluster delete $CLUSTER 再重跑。"
@@ -77,9 +107,20 @@ else
     --port "80:8080@loadbalancer"
     --k3s-arg "--disable=traefik@server:0"
   )
+  [ -n "$DOCKER_MIRROR" ] && k3d_cluster_args+=(--registry-config dev/render/registries.yaml)
   [ "$REGISTRY_MODE" = 1 ] && k3d_cluster_args+=(--registry-use "$CLUSTER_REGISTRY")
   k3d cluster create "$CLUSTER" "${k3d_cluster_args[@]}"
 fi
+# 本机 context 可能对着别的集群（例如 k3d-test-k8s）。kubectl 不会因为「集群名不对」
+# 而报错，只会把清单 apply 到当前 context —— 于是 pod 落到错误的集群上拉不到本地镜像。
+kubectl config use-context "k3d-$CLUSTER" >/dev/null 2>&1 || true
+ctx="$(kubectl config current-context 2>/dev/null || true)"
+if [ "$ctx" != "k3d-$CLUSTER" ]; then
+  echo "当前 kubectl context 是 ${ctx:-<none>}，不是 k3d-$CLUSTER，已中止：不往别的集群 apply。"
+  echo "修复：k3d kubeconfig merge -a -d   或   KUBECONFIG=\$PWD/dev/render/kubeconfig.yaml ./dev/up.sh"
+  exit 1
+fi
+echo "kubectl context: $ctx"
 kubectl wait --for=condition=Ready node --all --timeout=180s
 
 step "3/9 安装 cert-manager"
@@ -87,19 +128,64 @@ kubectl apply -f cert-manager.yaml
 kubectl -n cert-manager wait --for=condition=Available deploy --all --timeout=300s
 
 step "4/9 生成内部 CA 与 base 清单"
-openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes \
-  -keyout /tmp/dsh-ca.key -out /tmp/dsh-ca.crt -subj "/CN=DSH Dev CA" 2>/dev/null
-kubectl -n cert-manager create secret tls dsh-internal-ca-keypair \
-  --cert=/tmp/dsh-ca.crt --key=/tmp/dsh-ca.key --dry-run=client -o yaml | kubectl apply -f -
+# 复用已有 CA：重跑一次就换一张 CA，会让所有已签发的用户证书失效。
+if kubectl -n cert-manager get secret dsh-internal-ca-keypair >/dev/null 2>&1; then
+  kubectl -n cert-manager get secret dsh-internal-ca-keypair \
+    -o jsonpath='{.data.tls\.crt}' | openssl base64 -d -A > /tmp/dsh-ca.crt
+  kubectl -n cert-manager get secret dsh-internal-ca-keypair \
+    -o jsonpath='{.data.tls\.key}' | openssl base64 -d -A > /tmp/dsh-ca.key
+  echo "复用集群里已有的 CA"
+else
+  openssl req -x509 -newkey rsa:2048 -sha256 -days 365 -nodes \
+    -keyout /tmp/dsh-ca.key -out /tmp/dsh-ca.crt -subj "/CN=DSH Dev CA" 2>/dev/null
+  kubectl -n cert-manager create secret tls dsh-internal-ca-keypair \
+    --cert=/tmp/dsh-ca.crt --key=/tmp/dsh-ca.key --dry-run=client -o yaml | kubectl apply -f -
+fi
 
 kubectl apply -f 01-namespaces.yaml
+# Secret 不能跨命名空间引用：ClusterIssuer 要 cert-manager 里那份，
+# router 在 dsh-system 里要挂同一份 CA 去校验 pod 证书，所以放两份。
+kubectl -n "$NS_SYS" create secret tls dsh-internal-ca-keypair \
+  --cert=/tmp/dsh-ca.crt --key=/tmp/dsh-ca.key --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f 04-rbac.yaml
 kubectl apply -f 05-networkpolicy.yaml
+# 本地没有内网模型网关，用户 pod 必须能连公网 443 才能真的对话。
+# NetworkPolicy 是并集语义，补一条更宽的出网规则即可，不用改生产清单。
+# 只放行 443；pod 之间仍然只有 router 能进（上面两条策略的 ingress 约束不变）。
+if [ "${DSH_ALLOW_PUBLIC_EGRESS:-1}" = "1" ]; then
+  kubectl apply -f - <<YAML
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: dsh-dev-public-egress, namespace: $NS_USERS }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - { protocol: TCP, port: 443 }
+YAML
+fi
 kubectl apply -f 06-admission-policy.yaml
 kubectl apply -f 07-issuer.yaml
 # 02 Kata / 03 Ceph 跳过；08 边缘证书、12 Istio 跳过
 
 step "5/9 准备 Secret"
+# 复用集群里已有的令牌：Secret 换了值、Deployment 模板却没变时，kubectl apply 不会重启
+# pod，跑着的进程仍拿旧令牌 —— 表现为「重启后一切正常、否则一直是 403」。
+# 所有值都齐才复用，缺一个就整套重生成。
+read_secret_key() { kubectl -n "$1" get secret "$2" -o jsonpath="{.data.$3}" 2>/dev/null | openssl base64 -d -A 2>/dev/null || true; }
+if kubectl -n "$NS_SYS" get secret dsh-control-auth >/dev/null 2>&1; then
+  old_admin="$(read_secret_key "$NS_SYS" dsh-control-auth admin-token)"
+  old_router="$(read_secret_key "$NS_SYS" dsh-control-auth router-token)"
+  old_register="$(read_secret_key "$NS_SYS" dsh-control-auth register-token)"
+  if [ -n "$old_admin" ] && [ -n "$old_router" ] && [ -n "$old_register" ]; then
+    ADMIN_TOKEN="$old_admin"; ROUTER_TOKEN="$old_router"; REGISTER_TOKEN="$old_register"
+    echo "复用已有的控制面令牌"
+  fi
+fi
+COOKIE_KEY="$(read_secret_key "$NS_SYS" dsh-router-auth cookie-key)"
+[ -n "$COOKIE_KEY" ] || COOKIE_KEY="$(openssl rand -hex 32)"
+
 kubectl -n "$NS_SYS" create secret generic dsh-control-auth \
   --from-literal=admin-token="$ADMIN_TOKEN" \
   --from-literal=router-token="$ROUTER_TOKEN" \
@@ -107,7 +193,7 @@ kubectl -n "$NS_SYS" create secret generic dsh-control-auth \
 kubectl -n "$NS_USERS" create secret generic dsh-control-auth \
   --from-literal=register-token="$REGISTER_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "$NS_SYS" create secret generic dsh-router-auth \
-  --from-literal=cookie-key="$(openssl rand -hex 32)" --dry-run=client -o yaml | kubectl apply -f -
+  --from-literal=cookie-key="$COOKIE_KEY" --dry-run=client -o yaml | kubectl apply -f -
 # 真实模型凭据：没有就走 dummy，端到端聊天会失败但结构仍可验
 MODEL_KEY="${DEEPSEEK_API_KEY:-}"
 if [ -z "$MODEL_KEY" ]; then

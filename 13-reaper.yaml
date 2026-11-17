@@ -37,6 +37,9 @@ spec:
       labels: { app: dsh-reaper }
     spec:
       serviceAccountName: dsh-reaper
+      # dsh-system 开了 PodSecurity restricted：缺 runAsNonRoot / seccompProfile 时
+      # ReplicaSet 建不出 pod，表现为「deployment 一直 0/1、没有 pod、只有 FailedCreate 事件」。
+      securityContext: { runAsNonRoot: true, runAsUser: 65534, runAsGroup: 65534, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: reaper
           image: registry.corp/dsh-reaper:0.1.0

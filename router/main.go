@@ -23,6 +23,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -136,15 +137,48 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 // handleDevSSO 只在 DEV_SUBJECT 非空时挂载：本地没有 IdP，直接签发 ticket，
 // 但 ticket 的签名与校验走的是和正式流程完全相同的代码路径。
+// devSubjectPattern 限制本地假 IdP 能签发的身份形态。
+var devSubjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._%+-]{0,63}@[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+
+// devSubjectForHost 把子域映射成身份：usera.dsh.corp -> usera@corp。
+// 域后缀沿用 DEV_SUBJECT（本地是 corp），只有 dev 模式才返回非空。
+func (s *Server) devSubjectForHost(host string) string {
+	if s.devSubject == "" {
+		return ""
+	}
+	at := strings.LastIndex(s.devSubject, "@")
+	if at < 0 {
+		return ""
+	}
+	slug := strings.SplitN(host, ".", 2)[0]
+	if slug == "" {
+		return ""
+	}
+	subj := strings.ToLower(slug) + s.devSubject[at:]
+	if !devSubjectPattern.MatchString(subj) {
+		return ""
+	}
+	return subj
+}
+
 func (s *Server) handleDevSSO(w http.ResponseWriter, r *http.Request) {
 	ret := r.URL.Query().Get("return")
 	if ret == "" {
 		http.Error(w, "missing return", http.StatusBadRequest)
 		return
 	}
+	// 默认签发 DEV_SUBJECT，可用 ?subject= 指定别人（本地验多用户）
+	subject := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("subject")))
+	if subject == "" {
+		subject = strings.ToLower(s.devSubject)
+	}
+	if !devSubjectPattern.MatchString(subject) {
+		http.Error(w, "bad subject", http.StatusBadRequest)
+		return
+	}
 	exp := time.Now().Add(60 * time.Second).Unix()
 	e := fmt.Sprint(exp)
-	ticket := s.devSubject + "|" + e + "|" + s.mac("ticket|"+s.devSubject+"|"+e)
+	ticket := subject + "|" + e + "|" + s.mac("ticket|"+subject+"|"+e)
 	u, err := url.Parse(ret)
 	if err != nil {
 		http.Error(w, "bad return", http.StatusBadRequest)

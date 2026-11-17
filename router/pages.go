@@ -203,7 +203,13 @@ func (s *Server) redirectToSSO(w http.ResponseWriter, r *http.Request, next stri
 		})
 	}
 	cb := s.publicScheme + "://" + r.Host + "/_auth/callback"
-	http.Redirect(w, r, s.ssoURL+"?return="+url.QueryEscape(cb), http.StatusFound)
+	u := s.ssoURL + "?return=" + url.QueryEscape(cb)
+	// 本地假 IdP：按子域决定身份（usera.dsh.corp -> usera@corp），
+	// 这样一台机器能分别验多个用户；生产走真实 IdP，这段不会执行。
+	if subj := s.devSubjectForHost(r.Host); subj != "" {
+		u += "&subject=" + url.QueryEscape(subj)
+	}
+	http.Redirect(w, r, u, http.StatusFound)
 }
 
 // takeNext 读回登录前想去的位置，读完立即清掉。

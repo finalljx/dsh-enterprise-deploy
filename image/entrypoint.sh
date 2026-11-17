@@ -35,6 +35,17 @@ if [ ! -f "$DSH_HOME/profiles/web/package.json" ] && [ -d /opt/dsh/profile-seed/
 fi
 install -m 0644 /opt/dsh/profile/cordis.patch.yml "$DSH_HOME/profiles/web/cordis.patch.yml"
 
+# 老卷可能是在插件装好之前创建的：缺了就补一次，否则 DSH 会因必需插件未激活而拒绝启动
+if [ ! -d "$DSH_HOME/profiles/web/node_modules/@corp/dsh-plugin-activity" ] \
+   && [ -d /opt/dsh/profile-seed/profiles/web/node_modules ]; then
+  cp -a /opt/dsh/profile-seed/profiles/web/node_modules "$DSH_HOME/profiles/web/"
+fi
+
+# kubelet 挂卷时 fsGroup 会把文件权限放宽到 660，DSH 拒绝「组可读」的凭据文件
+if [ -f "$DSH_HOME/.credentials.yaml" ]; then
+  chmod 600 "$DSH_HOME/.credentials.yaml"
+fi
+
 LOG=/tmp/dsh-web.log
 : > "$LOG"
 

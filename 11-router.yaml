@@ -34,7 +34,9 @@ spec:
       labels: { app: dsh-router }
     spec:
       serviceAccountName: dsh-router
-      securityContext: { runAsNonRoot: true, runAsUser: 10002, seccompProfile: { type: RuntimeDefault } }
+      # fsGroup 是必须的：secret 卷默认 root:root，而进程以 10002 运行，
+      # 没有它读不到 client cert（表现为 CrashLoop 里的 permission denied）。
+      securityContext: { runAsNonRoot: true, runAsUser: 10002, fsGroup: 10002, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: router
           image: registry.corp/dsh-router:0.1.0
