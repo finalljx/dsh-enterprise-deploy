@@ -129,6 +129,32 @@
     return button;
   }
 
+  function deleteButton(user) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost small danger";
+    button.textContent = "删除";
+    button.addEventListener("click", function () {
+      var msg = "删除 " + user.subject + "？\n\n" +
+        "会停止并删除它的工作负载与凭据，用户立即无法访问。\n" +
+        "数据库记录保留为软删除状态（数据卷也保留），可随时重新开通恢复。\n" +
+        "如需彻底清除数据，请在命令行加 keepData=0 重试。";
+      if (!window.confirm(msg)) return;
+      button.disabled = true;
+      show("正在删除 " + user.subject + "…", true);
+      api("/_dsh/admin/api/users?subject=" + encodeURIComponent(user.subject), { method: "DELETE" })
+        .then(function () {
+          show("已删除 " + user.subject + "（软删除，数据保留）", true);
+          return load();
+        })
+        .catch(function (err) {
+          show(err.message, false);
+          button.disabled = false;
+        });
+    });
+    return button;
+  }
+
   function render(users) {
     rows.textContent = "";
     empty.hidden = users.length > 0;
@@ -146,6 +172,7 @@
       if (user.desiredState !== "archived") {
         actionCell.appendChild(actionButton(user));
       }
+      actionCell.appendChild(deleteButton(user));
 
       tr.appendChild(cell(user.subject, "subject"));
       tr.appendChild(cell(user.publicHost, "mono"));

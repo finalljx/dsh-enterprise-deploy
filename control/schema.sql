@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS dsh_users (
   open_turn        boolean NOT NULL DEFAULT false,
   last_activity_at bigint  NOT NULL DEFAULT 0,
   registered_at    bigint  NOT NULL DEFAULT 0,
-  updated_at       timestamptz NOT NULL DEFAULT now()
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  deleted_at       timestamptz                  -- 软删除：非空即对 router/回收器不可见
 );
 
 -- 一人一 pod：handle 唯一
@@ -23,3 +24,8 @@ CREATE INDEX IF NOT EXISTS dsh_users_idle_idx
 
 -- 反向拉起扫描路径
 CREATE INDEX IF NOT EXISTS dsh_users_wanted_idx ON dsh_users (desired_state, handle);
+
+-- 已有库升级（幂等）：软删除列
+ALTER TABLE dsh_users ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+CREATE INDEX IF NOT EXISTS dsh_users_deleted_idx
+  ON dsh_users (deleted_at) WHERE deleted_at IS NOT NULL;

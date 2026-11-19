@@ -47,39 +47,48 @@ type dshSession struct {
 }
 
 type Server struct {
-	controlURL    string
-	routerToken   string
-	ssoURL        string
-	cookieKey     []byte
-	rootCAs       *x509.CertPool
-	clientCert    tls.Certificate
-	podPort       string
-	publicScheme  string
-	devSubject    string
-	transport     sync.Map // podIP -> *http.Transport
-	dshCookies    sync.Map // subject -> dshSession
-	cookieSecure  bool
-	brand         string
-	loginMode     string
-	wakeMu        sync.Mutex
-	wakeAt        map[string]time.Time
-	adminToken    string
-	adminSubjects map[string]bool
-	baseDomain    string
+	controlURL   string
+	routerToken  string
+	ssoURL       string
+	cookieKey    []byte
+	rootCAs      *x509.CertPool
+	clientCert   tls.Certificate
+	podPort      string
+	publicScheme string
+	devSubject   string
+	transport    sync.Map // podIP -> *http.Transport
+	dshCookies   sync.Map // subject -> dshSession
+	cookieSecure bool
+	// auto 模式：协议与 cookie 的 Secure 都由每个请求决定（ALB/Istio 后面不用手工配）
+	schemeAuto       bool
+	cookieSecureAuto bool
+	brand            string
+	loginMode        string
+	wakeMu           sync.Mutex
+	wakeAt           map[string]time.Time
+	adminToken       string
+	adminSubjects    map[string]bool
+	baseDomain       string
 }
 
 func main() {
 	logger := setupLogging()
 
 	s := &Server{
-		controlURL:    mustEnv("CONTROL_URL"),
-		routerToken:   mustEnv("ROUTER_TOKEN"),
-		ssoURL:        mustEnv("SSO_URL"),
-		cookieKey:     []byte(mustEnv("COOKIE_KEY")),
-		podPort:       envOr("POD_PORT", "8443"),
-		publicScheme:  envOr("PUBLIC_SCHEME", "https"),
-		devSubject:    os.Getenv("DEV_SUBJECT"), // 本地开发：非空则启用 /_dev/sso
-		cookieSecure:  envOr("COOKIE_SECURE", "true") == "true",
+		controlURL:   mustEnv("CONTROL_URL"),
+		routerToken:  mustEnv("ROUTER_TOKEN"),
+		ssoURL:       mustEnv("SSO_URL"),
+		cookieKey:    []byte(mustEnv("COOKIE_KEY")),
+		podPort:      envOr("POD_PORT", "8443"),
+		publicScheme: envOr("PUBLIC_SCHEME", "https"),
+		devSubject:   os.Getenv("DEV_SUBJECT"), // 本地开发：非空则启用 /_dev/sso
+		cookieSecure: envOr("COOKIE_SECURE", "true") == "true",
+		schemeAuto:   strings.EqualFold(envOr("PUBLIC_SCHEME", "https"), "auto"),
+		cookieSecureAuto: func() bool {
+			raw := strings.ToLower(strings.TrimSpace(os.Getenv("COOKIE_SECURE")))
+			// 显式 auto，或 PUBLIC_SCHEME=auto 且没写 COOKIE_SECURE 时跟随协议
+			return raw == "auto" || (strings.EqualFold(envOr("PUBLIC_SCHEME", "auto"), "auto") && raw == "")
+		}(),
 		brand:         envOr("DSH_BRAND", "DSH 工作区"),
 		loginMode:     envOr("LOGIN_MODE", "page"), // page=先给登录页；direct=直接跳 SSO
 		wakeAt:        make(map[string]time.Time),
@@ -139,7 +148,9 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next := s.takeNext(w, r)
-	http.SetCookie(w, s.newSessionCookie(subject, time.Now().Add(12*time.Hour)))
+	c := s.newSessionCookie(subject, time.Now().Add(12*time.Hour))
+	c.Secure = s.secureFor(r)
+	http.SetCookie(w, c)
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
@@ -375,6 +386,43 @@ func (s *Server) lookup(ctx context.Context, subject string) (Record, int) {
 		return Record{}, http.StatusBadGateway
 	}
 	return rec, http.StatusOK
+}
+
+// schemeFor 返回浏览器实际使用的协议。
+// PUBLIC_SCHEME=auto 时按 X-Forwarded-Proto（ALB/Istio 会带）判断，其次看 r.TLS；
+// 其它情况直接用配置值——router 在集群内，光看 r.TLS 判断不了 TLS 是否在外层被终止。
+func (s *Server) schemeFor(r *http.Request) string {
+	// 只有显式给了 http/https 才固定；空值和 auto 都按请求判断。
+	// 关键：绝不把 http 请求"升级"成 https——那会让 http 入口的回调跳到一个没人监听的 443。
+	if s.publicScheme != "" && !strings.EqualFold(s.publicScheme, "auto") {
+		return strings.ToLower(s.publicScheme)
+	}
+	if p := firstProto(r.Header.Get("X-Forwarded-Proto")); p != "" {
+		return p
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func firstProto(v string) string {
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "http" || v == "https" {
+		return v
+	}
+	return ""
+}
+
+// secureFor 决定 cookie 的 Secure 属性：auto 模式跟随协议，否则用配置值。
+func (s *Server) secureFor(r *http.Request) bool {
+	if s.cookieSecureAuto {
+		return s.schemeFor(r) == "https"
+	}
+	return s.cookieSecure
 }
 
 // newSessionCookie 只在这一处构造会话 cookie，测试与回调共用，避免两套签名逻辑漂移。

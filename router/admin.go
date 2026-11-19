@@ -127,8 +127,30 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.relayJSON(w, code, body)
+	case http.MethodDelete:
+		if !sameOrigin(r) {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin request rejected"})
+			return
+		}
+		sub := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("subject")))
+		if sub == "" {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "subject required"})
+			return
+		}
+		// 默认软删除（数据保留、立即不可见）；keepData=1 连 PVC 一起保留
+		path := "/internal/users?subject=" + url.QueryEscape(sub)
+		// 默认保留数据卷；只有显式 keepData=0 才让 control 删 PVC
+		if r.URL.Query().Get("keepData") == "0" {
+			path += "&keepData=0"
+		}
+		code, body, err := s.controlRequest(r.Context(), http.MethodDelete, path, nil, subject)
+		if err != nil {
+			s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		s.relayJSON(w, code, body)
 	default:
-		w.Header().Set("Allow", "GET, POST")
+		w.Header().Set("Allow", "GET, POST, DELETE")
 		s.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }

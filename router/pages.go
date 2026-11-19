@@ -198,11 +198,11 @@ func (s *Server) redirectToSSO(w http.ResponseWriter, r *http.Request, next stri
 			Path:     "/_auth",
 			MaxAge:   300,
 			HttpOnly: true,
-			Secure:   s.cookieSecure,
+			Secure:   s.secureFor(r),
 			SameSite: http.SameSiteLaxMode,
 		})
 	}
-	cb := s.publicScheme + "://" + r.Host + "/_auth/callback"
+	cb := s.schemeFor(r) + "://" + r.Host + "/_auth/callback"
 	u := s.ssoURL + "?return=" + url.QueryEscape(cb)
 	// 本地假 IdP：按子域决定身份（usera.dsh.corp -> usera@corp），
 	// 这样一台机器能分别验多个用户；生产走真实 IdP，这段不会执行。
@@ -226,7 +226,7 @@ func (s *Server) takeNext(w http.ResponseWriter, r *http.Request) string {
 		Path:     "/_auth",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   s.cookieSecure,
+		Secure:   s.secureFor(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	return next
@@ -288,7 +288,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   s.cookieSecure,
+		Secure:   s.secureFor(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, "/_dsh/login?e=logout", http.StatusSeeOther)

@@ -42,7 +42,30 @@ print(f"  \033[32mOK\033[0m    检查了 {len(glob.glob('**/*.sh', recursive=Tru
 sys.exit(1 if hits else 0)
 PY
 
-say "3. Go 格式"
+say "3. 跨平台命令（这套脚本既在 macOS 也在 Linux 跑）"
+
+# mktemp -t prefix：BSD 会自动补 X，GNU 要求模板里至少 3 个 X，Linux 上直接报错。
+# 正确写法：mktemp "${TMPDIR:-/tmp}/prefix.XXXXXX"
+mktemp_bad=$(grep -rn --include='*.sh' -E '^[^#]*mktemp +-t ' . 2>/dev/null \
+  | grep -v 'XXXXXX' | grep -v '^./hack/lint.sh:' || true)
+if [ -n "$mktemp_bad" ]; then
+  printf '%s\n' "$mktemp_bad"
+  bad "mktemp -t 缺 X 模板（Linux 会报 too few X's）"
+else
+  ok "mktemp 模板"
+fi
+
+# 其它 GNU/BSD 单边语法：只提示，人工确认是否只在目标平台执行
+for pat in "sed -i ''" "readlink -f" "stat -c" "date -d "; do
+  hits=$(grep -rn --include='*.sh' -F -- "$pat" . 2>/dev/null \
+    | grep -v '^./hack/lint.sh:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+  if [ -n "$hits" ]; then
+    printf '%s\n' "$hits" | head -3
+    warn "上面用了平台相关语法：${pat}（确认只在 macOS 或只在 Linux 跑）"
+  fi
+done
+
+say "4. Go 格式"
 if command -v go >/dev/null 2>&1; then
   for d in control router; do
     out=$(cd "$d" && gofmt -l . 2>/dev/null)

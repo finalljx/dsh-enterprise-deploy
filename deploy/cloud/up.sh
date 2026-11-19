@@ -372,8 +372,10 @@ step_alb() {
   kubectl -n "$NS_SYS" patch svc dsh-router --type=merge \
     -p '{"spec":{"type":"NodePort","externalTrafficPolicy":"Local"}}' >/dev/null
 
-  # ALB 终止 TLS，浏览器看到的是 https；这一跳是 http 不影响这两个值
-  local set_args=(COOKIE_SECURE=true PUBLIC_SCHEME=https DSH_BASE_DOMAIN="$DSH_DOMAIN")
+  # 协议交给 router 自动判断（读 ALB 带的 X-Forwarded-Proto），
+  # 删掉 COOKIE_SECURE 让它跟随协议：http 下不带 Secure、https 下带。
+  # 这样 ALB 只开 80 时不会被强行跳到 443。
+  local set_args=(PUBLIC_SCHEME=auto COOKIE_SECURE- DSH_BASE_DOMAIN="$DSH_DOMAIN")
   if [ "$KEEP_DEV_LOGIN" = "1" ]; then
     set_args+=(DEV_SUBJECT="$ADMIN_SUBJECT" SSO_URL=/_dev/sso)
     echo "  保留 dev 登录（KEEP_DEV_LOGIN=1）：仍在用假 IdP"
@@ -411,7 +413,9 @@ step_provision() {
   fi
 
   local pflog pf ok_url rc
-  pflog=$(mktemp -t dshpf)
+  # 别用 `mktemp -t dshpf`：BSD 会自动补 X，GNU 要求模板里至少有 3 个 X，
+  # 在 Linux 上会报 "too few X's in template"。显式给模板两边都兼容。
+  pflog=$(mktemp "${TMPDIR:-/tmp}/dshpf.XXXXXX")
   kubectl -n "${NS_SYS}" port-forward svc/dsh-control "${PF_PORT}:8080" >"${pflog}" 2>&1 &
   pf=$!
   ok_url=0

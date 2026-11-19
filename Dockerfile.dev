@@ -25,7 +25,6 @@ RUN chmod 0755 /opt/dsh/*.sh
 # 模型端点：开发时指向真实可用的 Messages 兼容服务
 ARG MODEL_BASE_URL=https://api.deepseek.com/anthropic
 RUN sed -i -e "s#https://llm-gw.corp/anthropic#${MODEL_BASE_URL}#" \
-           -e "s#apiKeyEnv: DSH_MODEL_TOKEN#apiKeyEnv: DEEPSEEK_API_KEY#" \
            /opt/dsh/profile/cordis.patch.yml
 
 COPY plugin /opt/plugin

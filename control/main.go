@@ -289,8 +289,54 @@ func main() {
 			logFor(r.Context()).Info("upserted user", "handle", rec.Handle,
 				"subject", rec.Subject, "host", rec.PublicHost)
 			writeJSON(w, http.StatusCreated, map[string]string{"status": "ok"})
+		case http.MethodDelete:
+			// 删除用户：默认软删除（数据保留、立即不可见）；
+			// ?purge=1 同时物理删除数据库行，?keepData=1 保留 PVC。
+			subject := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("subject")))
+			if subject == "" {
+				http.Error(w, "subject required", http.StatusBadRequest)
+				return
+			}
+			if prov == nil {
+				http.Error(w, "provisioning unavailable (not in cluster)", http.StatusServiceUnavailable)
+				return
+			}
+			// 默认保留数据卷（软删除语义）；显式 keepData=0 才真的删 PVC
+			keepData := r.URL.Query().Get("keepData") != "0"
+			purge := r.URL.Query().Get("purge") == "1"
+			log := logFor(r.Context()).With("subject", subject, "keepData", keepData, "purge", purge)
+
+			// 先软删除：router 立刻查不到，删除过程中不会被继续转发
+			deleted, err := store.SoftDelete(r.Context(), subject)
+			if err != nil {
+				log.Error("soft delete failed", "err", err.Error())
+				http.Error(w, "store error", http.StatusInternalServerError)
+				return
+			}
+
+			actions, terr := prov.Teardown(r.Context(), subject, keepData)
+			purged := false
+			if purge && terr == nil {
+				if purged, err = store.Purge(r.Context(), subject); err != nil {
+					log.Error("purge failed", "err", err.Error())
+					http.Error(w, "store error", http.StatusInternalServerError)
+					return
+				}
+			}
+			status := http.StatusOK
+			resp := map[string]any{
+				"subject": subject, "deleted": deleted, "purged": purged,
+				"keepData": keepData, "actions": actions,
+			}
+			if terr != nil {
+				// 行已软删除，资源清理失败可重试；返回 500 让调用方知道没清干净
+				status = http.StatusInternalServerError
+				resp["error"] = terr.Error()
+				log.Error("teardown failed", "err", terr.Error())
+			}
+			writeJSON(w, status, resp)
 		default:
-			w.Header().Set("Allow", "GET, POST")
+			w.Header().Set("Allow", "GET, POST, DELETE")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})

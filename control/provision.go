@@ -61,14 +61,16 @@ type ProvisionConfig struct {
 
 func provisionConfigFromEnv() ProvisionConfig {
 	return ProvisionConfig{
-		Namespace:       envOr("DSH_NAMESPACE", "dsh-users"),
-		BaseDomain:      envOr("DSH_BASE_DOMAIN", "dsh.corp"),
-		Image:           envOr("DSH_IMAGE", "registry.corp/dsh:0.2.1-alpha.4"),
-		StorageClass:    envOr("DSH_STORAGE_CLASS", "dsh-rbd"),
-		RuntimeClass:    envOr("DSH_RUNTIME_CLASS", "kata-clh-runtime-rs"),
-		Issuer:          envOr("DSH_ISSUER", "dsh-internal-ca"),
-		Storage:         envOr("DSH_STORAGE", "30Gi"),
-		ModelEnvName:    envOr("DSH_MODEL_ENV_NAME", "DSH_MODEL_TOKEN"),
+		Namespace:    envOr("DSH_NAMESPACE", "dsh-users"),
+		BaseDomain:   envOr("DSH_BASE_DOMAIN", "dsh.corp"),
+		Image:        envOr("DSH_IMAGE", "registry.corp/dsh:0.2.1-alpha.4"),
+		StorageClass: envOr("DSH_STORAGE_CLASS", "dsh-rbd"),
+		RuntimeClass: envOr("DSH_RUNTIME_CLASS", "kata-clh-runtime-rs"),
+		Issuer:       envOr("DSH_ISSUER", "dsh-internal-ca"),
+		Storage:      envOr("DSH_STORAGE", "30Gi"),
+		// 必须与镜像 profile 里的 apiKeyEnv 一致，否则 key 注入了但 DSH 读不到：
+		// pod 里会出现"页面明明设了 key、却报 authentication_error"的现象。
+		ModelEnvName:    envOr("DSH_MODEL_ENV_NAME", "DEEPSEEK_API_KEY"),
 		PrincipalPrefix: envOr("DSH_PRINCIPAL_PREFIX", "spiffe://corp/dsh/user/"),
 	}
 }
@@ -232,6 +234,7 @@ func (p *Provisioner) provision(ctx context.Context, in ProvisionInput, users us
 		return ProvisionResult{}, err
 	}
 
+	names.pvc = p.resolvePVCName(ctx, names)
 	if _, err := step(ctx, log, "pvc", func() (string, error) {
 		return p.applyPVC(ctx, names, tier)
 	}); err != nil {
@@ -278,18 +281,47 @@ type names struct {
 }
 
 func provisionNames(cfg ProvisionConfig, subject, slug string) names {
-	sum := sha256.Sum256([]byte(subject))
 	return names{
 		namespace: cfg.Namespace,
 		subject:   subject,
 		slug:      slug,
 		host:      slug + "." + cfg.BaseDomain,
 		label:     labelFor(subject),
-		pvc:       "dsh-home-" + hex.EncodeToString(sum[:])[:12],
-		cert:      "dsh-" + slug + "-tls",
-		secret:    "dsh-model-token-" + slug,
-		deploy:    "dsh-" + slug,
+		// 可读名：dsh-home-<slug>。subject 的 hash 只用于兼容早期命名（见 legacyPVCName）。
+		pvc:    "dsh-home-" + slug,
+		cert:   "dsh-" + slug + "-tls",
+		secret: "dsh-model-token-" + slug,
+		deploy: "dsh-" + slug,
 	}
+}
+
+// legacyPVCName 是早期版本用的 hash 命名（dsh-home-<sha256(subject)[:12]>）。
+// 仅用于兼容已存在的用户：PVC 不能改名，重建会丢掉数据。
+func legacyPVCName(subject string) string {
+	sum := sha256.Sum256([]byte(subject))
+	return "dsh-home-" + hex.EncodeToString(sum[:])[:12]
+}
+
+// resolvePVCName：新名字不存在但旧名字存在时，继续用旧名字，避免把老用户的数据"弄丢"。
+func (p *Provisioner) resolvePVCName(ctx context.Context, n names) string {
+	code, _, err := p.k8s.do(ctx, http.MethodGet, p.pvcPath(n.namespace, n.pvc), nil, "")
+	if err != nil || code != http.StatusNotFound {
+		return n.pvc
+	}
+	legacy := legacyPVCName(n.subject)
+	if legacy == n.pvc {
+		return n.pvc
+	}
+	code, _, err = p.k8s.do(ctx, http.MethodGet, p.pvcPath(n.namespace, legacy), nil, "")
+	if err == nil && code == http.StatusOK {
+		logFor(ctx).Warn("沿用历史 PVC 命名", "subject", n.subject, "pvc", legacy)
+		return legacy
+	}
+	return n.pvc
+}
+
+func (p *Provisioner) pvcPath(namespace, name string) string {
+	return "/api/v1/namespaces/" + url.PathEscape(namespace) + "/persistentvolumeclaims/" + url.PathEscape(name)
 }
 
 func (n names) secretPath() string {
@@ -656,4 +688,59 @@ func k8sError(op, name string, code int, body []byte) error {
 		detail = detail[:300] + "…"
 	}
 	return &k8sAPIError{Op: op, Name: name, Code: code, Reason: status.Reason, Detail: detail}
+}
+
+// Teardown 删除一个用户的工作负载与凭据。
+// 顺序刻意从"运行时"往"数据"走：先停 pod（PVC 才能删），再证书、密钥，最后数据卷。
+// keepData 为真时保留 PVC —— 适合"先封号、观察一段时间再清理"的流程。
+func (p *Provisioner) Teardown(ctx context.Context, subject string, keepData bool) ([]string, error) {
+	subject = strings.ToLower(strings.TrimSpace(subject))
+	if !subjectPattern.MatchString(subject) {
+		return nil, badRequest("邮箱格式不对：%q", subject)
+	}
+	slug := slugFor(subject)
+	n := provisionNames(p.cfg, subject, slug)
+	n.pvc = p.resolvePVCName(ctx, n)
+	log := logFor(ctx).With("handle", slug, "subject", subject)
+
+	var actions []string
+	del := func(op, path, name string) error {
+		code, body, err := p.k8s.do(ctx, http.MethodDelete, path, nil, "")
+		if err != nil {
+			return err
+		}
+		switch code {
+		case http.StatusOK, http.StatusAccepted:
+			actions = append(actions, op+" deleted")
+		case http.StatusNotFound:
+			actions = append(actions, op+" absent")
+		default:
+			return k8sError(op, name, code, body)
+		}
+		return nil
+	}
+
+	ns := url.PathEscape(n.namespace)
+	// Deployment 先删：pod 消失后 PVC 才可能被回收
+	if err := del("deployment", "/apis/apps/v1/namespaces/"+ns+"/deployments/"+url.PathEscape(n.deploy), n.deploy); err != nil {
+		return actions, err
+	}
+	if err := del("certificate", "/apis/cert-manager.io/v1/namespaces/"+ns+"/certificates/"+url.PathEscape(n.cert), n.cert); err != nil {
+		return actions, err
+	}
+	// cert-manager 签出来的 TLS Secret 与 Certificate 同名但不会随它删除（没有 ownerReference），
+	// 这里显式回收，否则同名 Secret 会一直留在命名空间里。
+	if err := del("tls secret", "/api/v1/namespaces/"+ns+"/secrets/"+url.PathEscape(n.cert), n.cert); err != nil {
+		return actions, err
+	}
+	if err := del("secret", n.secretPath(), n.secret); err != nil {
+		return actions, err
+	}
+	if keepData {
+		actions = append(actions, "pvc kept")
+	} else if err := del("pvc", p.pvcPath(n.namespace, n.pvc), n.pvc); err != nil {
+		return actions, err
+	}
+	log.Info("user torn down", "keepData", keepData, "actions", actions)
+	return actions, nil
 }

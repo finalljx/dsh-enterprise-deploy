@@ -67,6 +67,7 @@ ON CONFLICT (subject) DO UPDATE SET
   handle        = EXCLUDED.handle,
   public_host   = EXCLUDED.public_host,
   principal_uri = EXCLUDED.principal_uri,
+  deleted_at    = NULL,   -- 管理员再次开通 = 显式复活（软删除的逆向操作）
   updated_at    = now()`,
 		r.Subject, r.Handle, r.PublicHost, r.PrincipalURI)
 	return err
@@ -120,7 +121,8 @@ func (s *Store) HandleOwner(ctx context.Context, handle string) (string, error) 
 
 // List 供管理台展示，按 handle 排序。
 func (s *Store) List(ctx context.Context) ([]Record, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+recordColumns+` FROM dsh_users ORDER BY handle LIMIT 500`)
+	rows, err := s.pool.Query(ctx, `SELECT `+recordColumns+`
+	  FROM dsh_users WHERE deleted_at IS NULL ORDER BY handle LIMIT 500`)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +132,8 @@ func (s *Store) List(ctx context.Context) ([]Record, error) {
 
 // Get 读取一个用户。
 func (s *Store) Get(ctx context.Context, subject string) (Record, error) {
-	row := s.pool.QueryRow(ctx, `SELECT `+recordColumns+` FROM dsh_users WHERE subject = $1`, subject)
+	row := s.pool.QueryRow(ctx, `SELECT `+recordColumns+`
+	  FROM dsh_users WHERE subject = $1 AND deleted_at IS NULL`, subject)
 	r, err := scanRecord(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -146,7 +149,8 @@ func (s *Store) Idle(ctx context.Context, olderThan time.Duration) ([]Record, er
 	cutoff := time.Now().Add(-olderThan).Unix()
 	rows, err := s.pool.Query(ctx, `SELECT `+recordColumns+`
 	  FROM dsh_users
-	 WHERE desired_state = 'running'
+	 WHERE deleted_at IS NULL
+	   AND desired_state = 'running'
 	   AND open_turn = false
 	   AND pod_ip IS NOT NULL
 	   AND last_activity_at < $1
@@ -163,7 +167,8 @@ func (s *Store) Idle(ctx context.Context, olderThan time.Duration) ([]Record, er
 func (s *Store) Wanted(ctx context.Context) ([]Record, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+recordColumns+`
 	  FROM dsh_users
-	 WHERE desired_state = 'running'
+	 WHERE deleted_at IS NULL
+	   AND desired_state = 'running'
 	 ORDER BY handle
 	 LIMIT 500`)
 	if err != nil {
@@ -215,4 +220,41 @@ func collect(rows interface {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SoftDelete 软删除：保留数据，但对 router / 回收器立即不可见。
+func (s *Store) SoftDelete(ctx context.Context, subject string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+UPDATE dsh_users
+   SET deleted_at = now(), desired_state = 'sleeping',
+       pod_ip = NULL, launch_token = NULL, open_turn = false, updated_at = now()
+ WHERE subject = $1 AND deleted_at IS NULL`, subject)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// Purge 硬删除：只用于软删除之后的定期清理，或管理员显式要求彻底抹掉。
+func (s *Store) Purge(ctx context.Context, subject string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM dsh_users WHERE subject = $1`, subject)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// DeletedBefore 返回软删除超过阈值的用户，供定期清理使用。
+func (s *Store) DeletedBefore(ctx context.Context, olderThan time.Duration) ([]Record, error) {
+	cutoff := time.Now().Add(-olderThan)
+	rows, err := s.pool.Query(ctx, `SELECT `+recordColumns+`
+	  FROM dsh_users
+	 WHERE deleted_at IS NOT NULL AND deleted_at < $1
+	 ORDER BY deleted_at ASC
+	 LIMIT 500`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collect(rows)
 }

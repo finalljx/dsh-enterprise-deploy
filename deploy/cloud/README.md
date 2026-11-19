@@ -255,8 +255,10 @@ ALB_MODE=1 DEEPSEEK_API_KEY=sk-... ./deploy/cloud/up.sh
 
 1. Service 改成 `NodePort` + `externalTrafficPolicy: Local`
    （kube-proxy 只转本节点 pod，ALB 探测语义才准确；节点没 pod 该后端自然不通）
-2. router 设 `PUBLIC_SCHEME=https`、`COOKIE_SECURE=true`
-   （描述的是**浏览器**看到的协议，不是 ALB→k3s 这一跳）
+2. router 设 `PUBLIC_SCHEME=auto`，并删掉 `COOKIE_SECURE` 让它跟随协议
+   - ALB 带了 `X-Forwarded-Proto: https` → 回调用 https、cookie 带 `Secure`
+   - ALB 只开 80（没有该头）→ 回调保持 http、cookie 不带 `Secure`
+   - **绝不把 http 请求升级成 https**，所以 ALB 只配 80 时不会被跳到没人监听的 443
 3. 等 rollout 完成
 4. 打印 ALB 后端配置清单
 
@@ -267,6 +269,14 @@ ALB 侧照这个配：
 | 后端协议 / 端口 | HTTP / `NODE_PORT`（默认 31147，可改；集群重建后不会漂） |
 | 健康检查 | `GET /healthz`，间隔 10s，超时 5s，不健康 3 次 |
 | Host | **原样透传**，改写会导致 router 的 Host 校验 403 |
+
+协议也可以交给 router 自动判断：`PUBLIC_SCHEME=auto` 会读 `X-Forwarded-Proto`（ALB 七层
+默认会带），其次退回连接本身的 TLS 状态；`COOKIE_SECURE` 未显式设置时跟随协议，
+不会出现「回调是 https、cookie 没 Secure」这种组合坑。
+
+```
+PUBLIC_SCHEME=auto
+```
 | 会话保持 | 不需要（会话在 cookie 里） |
 | 安全组 | 只放行 ALB 后端地址段到该 NodePort |
 
@@ -281,6 +291,45 @@ ALB 侧照这个配：
 | 节点 | ALB 主动 `GET /healthz` | 这个后端能不能用 |
 
 svclb / klipper **不做健康检查**，它只是端口转发——所以 `ALB → svclb → router` 不会比 `ALB → NodePort` 更"及时"，只会多一个依赖。
+
+## 7.4 开通与删除用户
+
+开通（管理页 `/_dsh/admin`，或命令行）：
+
+```sh
+ADMIN_TOKEN=$(kubectl -n dsh-system get secret dsh-control-auth -o jsonpath='{.data.admin-token}' | base64 -d)
+kubectl -n dsh-system port-forward svc/dsh-control 18080:8080 &
+curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"subject":"bob@corp","tier":"T1","modelToken":"sk-..."}' \
+  http://127.0.0.1:18080/internal/provision
+```
+
+删除（软删除，默认保留数据卷）：
+
+```sh
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+  'http://127.0.0.1:18080/internal/users?subject=bob%40corp'
+```
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `keepData` | `1` | 保留 PVC（用户数据）；`keepData=0` 才真删 |
+| `purge` | `0` | `purge=1` 连数据库行一起物理删除（不可恢复） |
+
+删除做四件事，按顺序：
+
+1. 数据库软删除（`deleted_at` 置位）+ 清空 pod 信息 → router 立刻查不到，用户马上 503
+2. 删 Deployment → pod 消失
+3. 删 Certificate 与它签出的 TLS Secret
+4. 按 `keepData` 决定是否删 PVC
+
+管理页每行也有「删除」按钮，等价于 `keepData=1`（数据保留）。
+
+**PVC 命名**：`dsh-home-<slug>`（如 `dsh-home-bob`）。早期版本用
+`dsh-home-<sha256 前 12 位>`，provision 会检测旧名并继续沿用，不会给老用户分一个空卷。
+
+**定时清理**：`Store.DeletedBefore(duration)` 已就绪，后续在 control 里挂一个
+定时任务调用 `Purge` 即可（软删除超过 N 天的行才真正消失）。
 
 ## 8. 验收
 

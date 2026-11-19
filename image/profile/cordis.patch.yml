@@ -14,7 +14,7 @@
   name: '@deepseek-ai/dsh-llm-deepseek-api-key'
   config:
     baseURL: https://llm-gw.corp/anthropic
-    apiKeyEnv: DSH_MODEL_TOKEN
+    apiKeyEnv: DEEPSEEK_API_KEY
     # 网关提供的模型 id 需要显式声明目录（按实际填写）
     # models:
     #   - id: deepseek-agent

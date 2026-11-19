@@ -230,3 +230,13 @@ td.mono {
     align-items: flex-start;
   }
 }
+
+/* 删除按钮：危险操作，视觉上和唤醒/休眠区分开 */
+button.danger {
+  color: #b3261e;
+  border-color: #b3261e;
+}
+button.danger:hover:not(:disabled) {
+  background: #b3261e;
+  color: #fff;
+}

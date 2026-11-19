@@ -186,7 +186,7 @@ func TestProvisionCreatesResources(t *testing.T) {
 	if ann["dsh.corp/public-host"] != "alice.dsh.corp" || ann["dsh.corp/principal"] != "alice@corp" {
 		t.Fatalf("annotations = %+v", ann)
 	}
-	if ann["dsh.corp/home-claim"] != "dsh-home-"+hash12("alice@corp") {
+	if ann["dsh.corp/home-claim"] != "dsh-home-alice" {
 		t.Fatalf("home-claim = %v", ann["dsh.corp/home-claim"])
 	}
 	containers := tmpl["spec"].(map[string]any)["containers"].([]any)
@@ -297,7 +297,7 @@ func TestPVCNotPatchedOnRerun(t *testing.T) {
 	if _, err := p.Provision(context.Background(), in, &fakeRegistrar{}); err != nil {
 		t.Fatal(err)
 	}
-	pvcPath := pvcCollPath + "/dsh-home-" + hash12("bob@corp")
+	pvcPath := pvcCollPath + "/dsh-home-bob" // 现在按 slug 命名（可读）
 	before := k8s.get(pvcPath)
 	if before == nil {
 		t.Fatal("pvc missing")
