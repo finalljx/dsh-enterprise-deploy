@@ -112,7 +112,7 @@ func testConfig() ProvisionConfig {
 		RuntimeClass:    "kata-clh-runtime-rs",
 		Issuer:          "dsh-internal-ca",
 		Storage:         "30Gi",
-		ModelEnvName:    "DSH_MODEL_TOKEN",
+		ModelEnvName:    "GATEWAY_TOKEN", // 故意用非默认名，验证配置真的被采用
 		PrincipalPrefix: "spiffe://corp/dsh/user/",
 	}
 }
@@ -195,7 +195,7 @@ func TestProvisionCreatesResources(t *testing.T) {
 	for _, e := range env {
 		m := e.(map[string]any)
 		switch m["name"] {
-		case "DSH_MODEL_TOKEN":
+		case "GATEWAY_TOKEN":
 			modelRef = m["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)["name"].(string)
 		case "PRINCIPAL_URI":
 			principal = m["value"].(string)

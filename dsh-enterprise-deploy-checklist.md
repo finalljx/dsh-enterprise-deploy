@@ -202,7 +202,7 @@ spec:
             - name: DSH_PUBLIC_HOST
               valueFrom:
                 fieldRef: { fieldPath: "metadata.annotations['dsh.corp/public-host']" }
-            - name: DSH_MODEL_TOKEN
+            - name: DEEPSEEK_API_KEY
               valueFrom:
                 secretKeyRef: { name: dsh-model-token-alice, key: token }
           volumeMounts:

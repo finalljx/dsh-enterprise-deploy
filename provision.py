@@ -9,7 +9,7 @@
 
 必需：
     ADMIN_TOKEN    控制面管理员令牌（或 --admin-token）
-    modelToken     模型网关密钥（或 --model-token / DSH_MODEL_TOKEN）
+    modelToken     模型网关密钥（或 --model-token / DEEPSEEK_API_KEY）
 
 控制面从自己的环境变量取集群级约定（命名空间、镜像、StorageClass、RuntimeClass、
 Issuer、域名后缀），脚本不再渲染任何 YAML，也不再直接调 kubectl。
@@ -26,7 +26,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("user", help="企业邮箱小写，如 alice@corp")
     ap.add_argument("--tier", default="T1", choices=["T0", "T1", "T2"])
-    ap.add_argument("--model-token", default=os.environ.get("DSH_MODEL_TOKEN", ""),
+    ap.add_argument("--model-token",
+                    default=os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("DSH_MODEL_TOKEN", ""),
                     help="模型网关密钥；留空则要求同名 Secret 已存在")
     ap.add_argument("--control-url",
                     default=os.environ.get("CONTROL_URL",

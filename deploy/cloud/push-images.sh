@@ -16,7 +16,8 @@ cd "$(dirname "$0")/../.."
 [ -f deploy/cloud/env ] && { set -a; . ./deploy/cloud/env; set +a; }
 
 VPC_PREFIX="${DSH_REGISTRY:?需要 DSH_REGISTRY（VPC 端点），可写在 deploy/cloud/env}"
-DSH_VERSION="${DSH_VERSION:-0.2.1-alpha.4}"
+DSH_VERSION="${DSH_VERSION:-0.2.1-alpha.4}"   # 镜像里装的 DSH 版本
+IMAGE_TAG="${IMAGE_TAG:-$DSH_VERSION}"          # 镜像 tag，可与版本不同
 REPO_TAG="${REPO_TAG:-0.1.0}"
 GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 MODEL_BASE_URL="${MODEL_BASE_URL:-https://api.deepseek.com/anthropic}"
@@ -56,11 +57,12 @@ want dsh-reaper  && docker build --platform "$PLATFORM" -f reaper/Dockerfile \
 # 用户镜像必须用 Dockerfile.dev：image/Dockerfile 依赖尚未发布的活动插件
 want dsh && docker build --platform "$PLATFORM" -f Dockerfile.dev --build-arg MODEL_BASE_URL="$MODEL_BASE_URL" \
   --build-arg NPM_REGISTRY="$NPM_REGISTRY" \
-  -t "$PUB_PREFIX/dsh:$DSH_VERSION" .
+  --build-arg DSH_VERSION="$DSH_VERSION" \
+  -t "$PUB_PREFIX/dsh:$IMAGE_TAG" .
 
 say "3. 校验目标架构"
 ARCH_FAIL=0
-for ref in "dsh-control:$REPO_TAG" "dsh-router:$REPO_TAG" "dsh-reaper:$REPO_TAG" "dsh:$DSH_VERSION"; do
+for ref in "dsh-control:$REPO_TAG" "dsh-router:$REPO_TAG" "dsh-reaper:$REPO_TAG" "dsh:$IMAGE_TAG"; do
   case " $IMAGES " in
     *" ${ref%%:*} "*) ;;
     *) continue ;;
@@ -82,12 +84,12 @@ else
   want dsh-control && docker push "$PUB_PREFIX/dsh-control:$REPO_TAG"
   want dsh-router  && docker push "$PUB_PREFIX/dsh-router:$REPO_TAG"
   want dsh-reaper  && docker push "$PUB_PREFIX/dsh-reaper:$REPO_TAG"
-  want dsh         && docker push "$PUB_PREFIX/dsh:$DSH_VERSION"
+  want dsh         && docker push "$PUB_PREFIX/dsh:$IMAGE_TAG"
 fi
 
 say "4. 集群侧会引用（VPC 端点）"
 cat <<EOF
-  $VPC_PREFIX/dsh:$DSH_VERSION
+  $VPC_PREFIX/dsh:$IMAGE_TAG
   $VPC_PREFIX/dsh-control:$REPO_TAG
   $VPC_PREFIX/dsh-router:$REPO_TAG
   $VPC_PREFIX/dsh-reaper:$REPO_TAG

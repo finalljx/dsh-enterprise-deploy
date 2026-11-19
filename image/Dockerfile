@@ -6,6 +6,8 @@
 FROM node:22-bookworm-slim
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
+# DSH 版本：与 deploy/cloud/env 的 DSH_VERSION 保持一致（构建脚本会自动传进来）
+ARG DSH_VERSION=0.2.1-alpha.4
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends jq curl ca-certificates \
@@ -14,7 +16,7 @@ RUN apt-get update \
 # 锁死完整版本，禁止 range。
 # pnpm 是 `dsh plugin add` 的安装器，node 镜像里没有，缺了插件会静默装不上。
 RUN npm i -g --registry="${NPM_REGISTRY}" \
-      @deepseek-ai/dsh@0.2.1-alpha.4 \
+      @deepseek-ai/dsh@${DSH_VERSION} \
       pnpm@10 \
  && npm cache clean --force
 

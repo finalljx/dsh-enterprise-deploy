@@ -90,7 +90,8 @@ spec:
               value: spiffe://corp/dsh/user/alice
             - name: CONTROL_TOKEN
               valueFrom: { secretKeyRef: { name: dsh-control-auth, key: register-token } }
-            - name: DSH_MODEL_TOKEN
+            # 名字必须与镜像里 profile 的 apiKeyEnv、control 的 DSH_MODEL_ENV_NAME 一致
+            - name: DEEPSEEK_API_KEY
               valueFrom: { secretKeyRef: { name: dsh-model-token-alice, key: token } }
           ports: [{ containerPort: 8443, name: https }]
           volumeMounts:

@@ -331,6 +331,56 @@ curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
 **定时清理**：`Store.DeletedBefore(duration)` 已就绪，后续在 control 里挂一个
 定时任务调用 `Purge` 即可（软删除超过 N 天的行才真正消失）。
 
+## 7.5 升级 DSH 版本
+
+两个概念要分开：
+
+| 变量 | 含义 | 什么时候改 |
+|---|---|---|
+| `DSH_VERSION` | 镜像里装的 **DSH 包版本**（npm 上的版本） | 升级 DSH 时 |
+| `IMAGE_TAG` | 集群拉取的**镜像 tag**，默认等于 `DSH_VERSION` | 只改 profile/Dockerfile、不想动 DSH 版本时 |
+
+```
+DSH_VERSION=0.2.1-alpha.4        # 保持不动
+IMAGE_TAG=0.2.1-alpha.4-r2       # 重新构建一个新 tag
+```
+
+版本号只在一处改：`deploy/cloud/env` 的 `DSH_VERSION`。Dockerfile 通过
+`--build-arg DSH_VERSION` 接收（`Makefile` 与 `push-images.sh` 都会自动传）。
+
+```sh
+# 1. 改版本
+$EDITOR deploy/cloud/env          # DSH_VERSION=0.2.2-rc.5
+
+# 2. 只看有哪些版本可选
+curl -s https://registry.npmmirror.com/@deepseek-ai%2fdsh | jq -r '.versions|keys[]' | tail
+
+# 3. 重建并推送用户镜像
+IMAGES="dsh" ./deploy/cloud/push-images.sh
+
+# 4. 让控制面对"新开通的用户"用新镜像（重跑渲染即可）
+.\/deploy/cloud/up.sh
+```
+
+已有用户**不会自动升级**（它们的 Deployment 里写死了旧 tag）。逐个切换：
+
+```sh
+kubectl -n dsh-users set image deploy/dsh-bob \
+  dsh=<你的 registry>/dsh:<新版本>
+kubectl -n dsh-users rollout status deploy/dsh-bob
+```
+
+注意事项：
+
+- **tag 必须变**。若只是重新构建同一个 tag，节点上有同名旧镜像，`IfNotPresent` 不会重新拉取。
+  所以「升级」天然等价于「改 `DSH_VERSION`」。
+- **升级前先看 profile 兼容性**：镜像构建时会执行 `dsh plugin --profile web add /opt/plugin`，
+  若新版 DSH 改了插件 API，这一步会直接让构建失败——这正是我们希望的失败点（不是运行时才发现）。
+- 跨大版本时留意 `cordis.patch.yml` 里被重命名的条目。例如某版本起 `llm-deepseek` 不接受
+  `protocol` 字段，解析会报 `protocol is not configurable`；遇到时按提示删掉该字段即可。
+- 用户数据在 PVC 里，与镜像版本无关；但 **DSH 可能会迁移 `$DSH_HOME` 内的配置格式**，
+  升级前建议对一两个用户先做（`tar czf` 备份 `/data/dsh` 再切）。
+
 ## 8. 验收
 
 ```sh

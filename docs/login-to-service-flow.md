@@ -345,7 +345,7 @@ stateDiagram-v2
 | pod → control | Bearer | `register-token`（`dsh-users` 里的同值副本） |
 | router / reaper → control | Bearer | `router-token` |
 | provision.py → control | Bearer | `admin-token` |
-| pod → 模型网关 | TLS + API key，`baseURL` 走内网 | `dsh-model-token-<slug>` → `DSH_MODEL_TOKEN` |
+| pod → 模型网关 | TLS + API key，`baseURL` 走内网 | `dsh-model-token-<slug>` → `DEEPSEEK_API_KEY`（镜像 profile 的 `apiKeyEnv`） |
 
 设计上浏览器**永远看不到** launch token 与 DSH cookie：router 用自己的 cookie 换，代理时替换。
 唯一的硬约束是「launch token 不过网」——它等价于该 pod 的完整工具权限。

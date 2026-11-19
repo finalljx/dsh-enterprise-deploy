@@ -36,7 +36,12 @@ fi
 
 DSH_REGISTRY="${DSH_REGISTRY:?需要 DSH_REGISTRY，例如 registry.cn-hangzhou.aliyuncs.com/myns}"
 DSH_DOMAIN="${DSH_DOMAIN:?需要 DSH_DOMAIN，例如 dsh.example.com}"
+# DSH_VERSION 是 npm 上的 DSH 包版本（决定镜像里装的是哪个 DSH）；
+# IMAGE_TAG 是镜像 tag（决定集群拉哪个镜像）。两者默认相同，
+# 但重建镜像（例如只改了 profile / Dockerfile）时不必改动 DSH 版本：
+#   DSH_VERSION=0.2.1-alpha.4 IMAGE_TAG=0.2.1-alpha.4-r2 ./deploy/cloud/push-images.sh
 DSH_VERSION="${DSH_VERSION:-0.2.1-alpha.4}"
+IMAGE_TAG="${IMAGE_TAG:-$DSH_VERSION}"
 # control/router/reaper 的 tag 与 Makefile 保持一致（默认 0.1.0）；云上若用一套版本可改成同一个
 REPO_TAG="${REPO_TAG:-0.1.0}"
 DSH_STORAGE_CLASS="${DSH_STORAGE_CLASS:-local-path}"
@@ -77,6 +82,7 @@ if [ "${PRINT_CONFIG:-0}" = "1" ]; then
   cat <<EOF
 DSH_REGISTRY      = $DSH_REGISTRY
 DSH_VERSION       = $DSH_VERSION
+IMAGE_TAG         = $IMAGE_TAG
 REPO_TAG          = $REPO_TAG
 DSH_DOMAIN        = $DSH_DOMAIN
 DSH_STORAGE_CLASS = $DSH_STORAGE_CLASS
@@ -87,7 +93,7 @@ EDGE_ISSUER       = $EDGE_ISSUER
 KEEP_DEV_LOGIN    = $KEEP_DEV_LOGIN
 ADMIN_SUBJECT     = $ADMIN_SUBJECT
 镜像将渲染为：
-  $DSH_REGISTRY/dsh:$DSH_VERSION
+  $DSH_REGISTRY/dsh:$IMAGE_TAG
   $DSH_REGISTRY/dsh-control:$REPO_TAG
   $DSH_REGISTRY/dsh-router:$REPO_TAG
   $DSH_REGISTRY/dsh-reaper:$REPO_TAG
@@ -263,7 +269,7 @@ step_render() {
     "s#registry.corp/dsh-control:0.1.0#$DSH_REGISTRY/dsh-control:$REPO_TAG#g"
     "s#registry.corp/dsh-router:0.1.0#$DSH_REGISTRY/dsh-router:$REPO_TAG#g"
     "s#registry.corp/dsh-reaper:0.1.0#$DSH_REGISTRY/dsh-reaper:$REPO_TAG#g"
-    "s#registry.corp/dsh:0.2.1-alpha.4#$DSH_REGISTRY/dsh:$DSH_VERSION#g"
+    "s#registry.corp/dsh:0.2.1-alpha.4#$DSH_REGISTRY/dsh:$IMAGE_TAG#g"
     "s#storageClassName: dsh-rbd#storageClassName: $DSH_STORAGE_CLASS#g"
     "s#nodePort: 31147#nodePort: $NODE_PORT#g"
   )
@@ -289,11 +295,10 @@ step_apps() {
   say "7/9 control / router / reaper"
   kubectl apply -f "$RENDER/10-control.yaml"
   kubectl -n "$NS_SYS" set env deploy/dsh-control \
-    DSH_IMAGE="$DSH_REGISTRY/dsh:$DSH_VERSION" \
+    DSH_IMAGE="$DSH_REGISTRY/dsh:$IMAGE_TAG" \
     DSH_STORAGE_CLASS="$DSH_STORAGE_CLASS" \
     DSH_RUNTIME_CLASS="$DSH_RUNTIME_CLASS" \
     DSH_BASE_DOMAIN="$DSH_DOMAIN" \
-    DSH_MODEL_ENV_NAME=DEEPSEEK_API_KEY >/dev/null
   kubectl -n "$NS_SYS" rollout status deploy/dsh-control --timeout=300s
 
   kubectl apply -f "$RENDER/11-router.yaml"

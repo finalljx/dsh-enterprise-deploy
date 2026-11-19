@@ -40,7 +40,8 @@ image:
 	@test -n "$$DSH_VERSION" || { echo "DSH_VERSION 未设置，例如 0.2.1-alpha.4"; exit 1; }
 	docker build --platform linux/amd64 -f image/Dockerfile \
 	  --build-arg NPM_REGISTRY=$${NPM_REGISTRY:-https://registry.npmmirror.com} \
-	  -t $$DSH_REGISTRY/dsh:$$DSH_VERSION .
+	  --build-arg DSH_VERSION=$$DSH_VERSION \
+	  -t $$DSH_REGISTRY/dsh:$${IMAGE_TAG:-$$DSH_VERSION} .
 	docker push $$DSH_REGISTRY/dsh:$$DSH_VERSION
 
 router-image:
