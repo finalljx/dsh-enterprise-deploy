@@ -21,6 +21,8 @@ REPO_TAG="${REPO_TAG:-0.1.0}"
 GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 MODEL_BASE_URL="${MODEL_BASE_URL:-https://api.deepseek.com/anthropic}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+# ECS 基本都是 amd64；在 Apple Silicon 上构建必须显式指定，否则推上去是 arm64 镜像
+PLATFORM="${PLATFORM:-linux/amd64}"
 
 # VPC 端点去掉 -vpc 就是公网端点；拿不到就用 ACR_PUBLIC 显式指定
 PUB_PREFIX="${ACR_PUBLIC:-${VPC_PREFIX/-vpc./.}}"
@@ -40,22 +42,47 @@ if [ -z "${SKIP_PUSH:-}" ]; then
   docker login "$PUB_HOST"
 fi
 
-say "2. 构建"
-docker build -f control/Dockerfile --build-arg GOPROXY="$GOPROXY" -t "$PUB_PREFIX/dsh-control:$REPO_TAG" ./control
-docker build -f router/Dockerfile  -t "$PUB_PREFIX/dsh-router:$REPO_TAG"  ./router
-docker build -f reaper/Dockerfile  -t "$PUB_PREFIX/dsh-reaper:$REPO_TAG"  ./reaper
+# 只构建改动过的：IMAGES="dsh-router" 或 IMAGES="dsh-router dsh"，默认全部
+IMAGES="${IMAGES:-dsh-control dsh-router dsh-reaper dsh}"
+want() { case " $IMAGES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+say "2. 构建（${IMAGES}）"
+want dsh-control && docker build --platform "$PLATFORM" -f control/Dockerfile --build-arg GOPROXY="$GOPROXY" \
+  -t "$PUB_PREFIX/dsh-control:$REPO_TAG" ./control
+want dsh-router  && docker build --platform "$PLATFORM" -f router/Dockerfile \
+  -t "$PUB_PREFIX/dsh-router:$REPO_TAG" ./router
+want dsh-reaper  && docker build --platform "$PLATFORM" -f reaper/Dockerfile \
+  -t "$PUB_PREFIX/dsh-reaper:$REPO_TAG" ./reaper
 # 用户镜像必须用 Dockerfile.dev：image/Dockerfile 依赖尚未发布的活动插件
-docker build -f Dockerfile.dev --build-arg MODEL_BASE_URL="$MODEL_BASE_URL" \
+want dsh && docker build --platform "$PLATFORM" -f Dockerfile.dev --build-arg MODEL_BASE_URL="$MODEL_BASE_URL" \
   --build-arg NPM_REGISTRY="$NPM_REGISTRY" \
   -t "$PUB_PREFIX/dsh:$DSH_VERSION" .
 
-say "3. 推送"
+say "3. 校验目标架构"
+ARCH_FAIL=0
+for ref in "dsh-control:$REPO_TAG" "dsh-router:$REPO_TAG" "dsh-reaper:$REPO_TAG" "dsh:$DSH_VERSION"; do
+  case " $IMAGES " in
+    *" ${ref%%:*} "*) ;;
+    *) continue ;;
+  esac
+  got=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$PUB_PREFIX/$ref" 2>/dev/null || echo "?")
+  if [ "$got" = "$PLATFORM" ]; then
+    echo "  OK   $ref → $got"
+  else
+    echo "  FAIL $ref → ${got}（期望 ${PLATFORM}；集群是 amd64 时会 ImagePullBackOff/exec format error）"
+    ARCH_FAIL=1
+  fi
+done
+[ "$ARCH_FAIL" = 1 ] && { echo "架构不匹配，先别推" >&2; exit 1; }
+
+say "4. 推送"
 if [ -n "${SKIP_PUSH:-}" ]; then
   echo "  SKIP_PUSH=1，不推送"
 else
-  for ref in "dsh-control:$REPO_TAG" "dsh-router:$REPO_TAG" "dsh-reaper:$REPO_TAG" "dsh:$DSH_VERSION"; do
-    docker push "$PUB_PREFIX/$ref"
-  done
+  want dsh-control && docker push "$PUB_PREFIX/dsh-control:$REPO_TAG"
+  want dsh-router  && docker push "$PUB_PREFIX/dsh-router:$REPO_TAG"
+  want dsh-reaper  && docker push "$PUB_PREFIX/dsh-reaper:$REPO_TAG"
+  want dsh         && docker push "$PUB_PREFIX/dsh:$DSH_VERSION"
 fi
 
 say "4. 集群侧会引用（VPC 端点）"

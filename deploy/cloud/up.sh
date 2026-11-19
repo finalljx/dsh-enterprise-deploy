@@ -24,11 +24,13 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # 可选：把参数写在 deploy/cloud/env 里（已 gitignore），省得每次 export。
-# 环境变量优先级更高：文件里的值可以被命令行覆盖。
-if [ -f deploy/cloud/env ]; then
+# 注意：**配置文件优先**，同名环境变量会被文件里的值覆盖。
+# 想临时换一组参数，用 ENV_FILE 指向另一个文件（ENV_FILE=/dev/null 表示不读）。
+ENV_FILE="${ENV_FILE:-deploy/cloud/env}"
+if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1091
-  . ./deploy/cloud/env
+  . "$ENV_FILE"
   set +a
 fi
 
@@ -46,6 +48,8 @@ ADMIN_SUBJECT="${ADMIN_SUBJECT:-alice@corp}"
 WITH_ISTIO="${WITH_ISTIO:-0}"
 # 验证阶段没有 IdP 时保留 dev 登录；接真实 IdP 时设 0，并给 SSO_URL
 KEEP_DEV_LOGIN="${KEEP_DEV_LOGIN:-1}"
+# ALB 在本项目外部终止 TLS：集群内用 HTTP + NodePort，不需要 Istio
+ALB_MODE="${ALB_MODE:-0}"
 SSO_URL="${SSO_URL:-}"
 # 边缘证书的 issuer：默认用仓库自带的内部 CA（浏览器不信任，只适合 curl -k）。
 # 要浏览器绿锁，换成你的公网 issuer（如 Let's Encrypt + DNS-01 webhook）。
@@ -93,6 +97,10 @@ step_check() {
   major=$(printf '%s' "$raw" | sed -n 's/.*"major": *"\([0-9]*\)".*/\1/p' | head -1)
   minor=$(printf '%s' "$raw" | sed -n 's/.*"minor": *"\([0-9]*\).*/\1/p' | head -1)
   echo "  K8s 版本: ${major:-?}.${minor:-?}"
+  if [ "$ALB_MODE" = "1" ] && [ "$WITH_ISTIO" = "1" ]; then
+    echo "  ALB_MODE 与 WITH_ISTIO 互斥：TLS 只能在一个地方终止" >&2
+    exit 1
+  fi
   if [ "${major:-0}" -lt 1 ] || { [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -lt 30 ]; }; then
     echo "  K8s < 1.30：ValidatingAdmissionPolicy 不是 GA，准入策略段会失败" >&2
     exit 1
@@ -278,7 +286,10 @@ step_apps() {
   kubectl -n "$NS_SYS" set env deploy/dsh-router \
     COOKIE_SECURE=false PUBLIC_SCHEME=http DEV_SUBJECT="$ADMIN_SUBJECT" SSO_URL=/_dev/sso \
     ADMIN_SUBJECTS="$ADMIN_SUBJECT" DSH_BASE_DOMAIN="$DSH_DOMAIN" >/dev/null
-  kubectl -n "$NS_SYS" patch svc dsh-router -p '{"spec":{"type":"LoadBalancer"}}' >/dev/null
+  # 入口类型由模式决定：ALB_MODE → NodePort，WITH_ISTIO → ClusterIP，否则本机 LoadBalancer
+  if [ "$ALB_MODE" != "1" ] && [ "$WITH_ISTIO" != "1" ]; then
+    kubectl -n "$NS_SYS" patch svc dsh-router -p '{"spec":{"type":"LoadBalancer"}}' >/dev/null
+  fi
   kubectl -n "$NS_SYS" rollout status deploy/dsh-router --timeout=300s
 
   kubectl apply -f "$RENDER/13-reaper.yaml"
@@ -334,6 +345,44 @@ step_istio() {
   kubectl -n "$NS_SYS" rollout status deploy/dsh-router --timeout=180s
 }
 
+step_alb() {
+  say "7.6/9 ALB 接入（TLS 在 ALB 终止）"
+  if [ "$ALB_MODE" != "1" ]; then
+    echo "  跳过（ALB_MODE!=1）"
+    return 0
+  fi
+
+  # NodePort + Local：kube-proxy 只转本节点的 router pod，ALB 探测语义才准确，
+  # 且节点上没有 router pod 时该后端直接不通，由 ALB 摘除。
+  kubectl -n "$NS_SYS" patch svc dsh-router --type=merge \
+    -p '{"spec":{"type":"NodePort","externalTrafficPolicy":"Local"}}' >/dev/null
+
+  # ALB 终止 TLS，浏览器看到的是 https；这一跳是 http 不影响这两个值
+  local set_args=(COOKIE_SECURE=true PUBLIC_SCHEME=https DSH_BASE_DOMAIN="$DSH_DOMAIN")
+  if [ "$KEEP_DEV_LOGIN" = "1" ]; then
+    set_args+=(DEV_SUBJECT="$ADMIN_SUBJECT" SSO_URL=/_dev/sso)
+    echo "  保留 dev 登录（KEEP_DEV_LOGIN=1）：仍在用假 IdP"
+  else
+    [ -n "$SSO_URL" ] || { echo "KEEP_DEV_LOGIN=0 时必须给 SSO_URL" >&2; exit 1; }
+    set_args+=(SSO_URL="$SSO_URL")
+    kubectl -n "$NS_SYS" set env deploy/dsh-router DEV_SUBJECT- >/dev/null 2>&1 || true
+  fi
+  kubectl -n "$NS_SYS" set env deploy/dsh-router "${set_args[@]}" >/dev/null
+  kubectl -n "$NS_SYS" rollout status deploy/dsh-router --timeout=180s
+
+  local np
+  np=$(kubectl -n "$NS_SYS" get svc dsh-router -o jsonpath='{.spec.ports[0].nodePort}')
+  cat <<EOF
+
+  ALB 七层后端配置：
+    协议 HTTP   端口 $np   后端：每台 ECS 内网 IP
+    健康检查 GET /healthz（期望 200）  间隔 10s  超时 5s  不健康阈值 3  健康阈值 2
+    Host      必须原样透传，不要改写（否则 router 的 Host 校验 403）
+    安全组    只放行 ALB 后端地址段到 ${np}，不要对 0.0.0.0/0 开
+    会话保持  不需要（会话在 cookie 里）
+EOF
+}
+
 step_provision() {
   say "8/9 开通示例用户"
   if [ "${SKIP_PROVISION:-0}" = "1" ]; then
@@ -356,7 +405,10 @@ step_done() {
   local verify_cmd="./deploy/cloud/verify-isolation.sh"
   [ "$KATA_MODE" = "1" ] && verify_cmd="./deploy/cloud/verify-kata.sh"
   local ip src
-  if [ "$WITH_ISTIO" = "1" ]; then
+  if [ "$ALB_MODE" = "1" ]; then
+    ip="<ALB 的公网/内网地址>"
+    src="ALB（TLS 在 ALB 终止，后端 NodePort）"
+  elif [ "$WITH_ISTIO" = "1" ]; then
     ip=$(kubectl -n istio-system get svc istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
     src="istio-ingressgateway（TLS 由网关终止）"
   else
@@ -391,5 +443,6 @@ step_render
 step_database
 step_apps
 step_istio
+step_alb
 step_provision
 step_done

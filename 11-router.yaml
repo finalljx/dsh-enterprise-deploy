@@ -26,7 +26,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: dsh-router, namespace: dsh-system, labels: { app: dsh-router } }
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels: { app: dsh-router }
   template:
@@ -76,6 +76,12 @@ spec:
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             periodSeconds: 5
+          # /healthz 是纯本地检查（不查 DB/下游），适合 liveness；
+          # 没有它时进程 hang 住但端口仍 accept，readiness 会一直通过。
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits:   { cpu: "1", memory: 512Mi }

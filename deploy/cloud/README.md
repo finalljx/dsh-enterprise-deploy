@@ -162,9 +162,14 @@ ACR 个人版有两个域名，**本地 push 和集群 pull 用的不是同一�
 两个域名指向同一实例，registry 只按 repo 路径存，所以「公网 push + VPC pull」是同一份镜像。脚本会自动把 VPC 域名去掉 `-vpc` 得到公网域名：
 
 ```sh
-./deploy/cloud/push-images.sh              # 构建 + 推送
-SKIP_PUSH=1 ./deploy/cloud/push-images.sh  # 只构建打 tag，先看看
+./deploy/cloud/push-images.sh                 # 构建 + 推送（默认 linux/amd64）
+SKIP_PUSH=1 ./deploy/cloud/push-images.sh     # 只构建打 tag，先看看
+IMAGES="dsh-router" ./deploy/cloud/push-images.sh   # 只重建改动过的镜像
+PLATFORM=linux/arm64 ./deploy/cloud/push-images.sh  # 目标不是 amd64 时改这个
 ```
+
+Apple Silicon 上构建必须带 `--platform linux/amd64`，否则推上去是 arm64 镜像，ECS 上会
+`exec format error`。脚本默认就是 amd64，并在推送前校验每个镜像的架构，不匹配直接中止。
 
 ### 5.3 给集群配拉取凭据
 
@@ -237,6 +242,45 @@ DSH_REGISTRY=... DSH_DOMAIN=dsh.example.com DEEPSEEK_API_KEY=sk-... \
 
 **登录方式**：`KEEP_DEV_LOGIN=1`（默认）保留 `/_dev/sso` 假 IdP，用来先验 TLS 链路；
 接真实 IdP 时设 `KEEP_DEV_LOGIN=0 SSO_URL=https://sso.example.com/login`。
+
+### 7.3 云上已有 ALB：TLS 在 ALB 终止
+
+不要在集群内再启一层 TLS。设 `ALB_MODE=1`：
+
+```sh
+ALB_MODE=1 DEEPSEEK_API_KEY=sk-... ./deploy/cloud/up.sh
+```
+
+它做四件事：
+
+1. Service 改成 `NodePort` + `externalTrafficPolicy: Local`
+   （kube-proxy 只转本节点 pod，ALB 探测语义才准确；节点没 pod 该后端自然不通）
+2. router 设 `PUBLIC_SCHEME=https`、`COOKIE_SECURE=true`
+   （描述的是**浏览器**看到的协议，不是 ALB→k3s 这一跳）
+3. 等 rollout 完成
+4. 打印 ALB 后端配置清单
+
+ALB 侧照这个配：
+
+| 项 | 值 |
+|---|---|
+| 后端协议 / 端口 | HTTP / 打印出来的 NodePort |
+| 健康检查 | `GET /healthz`，间隔 10s，超时 5s，不健康 3 次 |
+| Host | **原样透传**，改写会导致 router 的 Host 校验 403 |
+| 会话保持 | 不需要（会话在 cookie 里） |
+| 安全组 | 只放行 ALB 后端地址段到该 NodePort |
+
+`ALB_MODE=1` 与 `WITH_ISTIO=1` 互斥——TLS 只能在一个地方终止，同时开会直接报错退出。
+
+**健康检查的分工**（谁汇报什么）：
+
+| 层 | 谁探测 | 管什么 |
+|---|---|---|
+| Pod | kubelet `readinessProbe`（5s，仓库已配） | 不 Ready 就从 Endpoints 摘掉 |
+| Pod 存活 | kubelet `livenessProbe`（10s，router 已配） | 进程 hang 住时重启 |
+| 节点 | ALB 主动 `GET /healthz` | 这个后端能不能用 |
+
+svclb / klipper **不做健康检查**，它只是端口转发——所以 `ALB → svclb → router` 不会比 `ALB → NodePort` 更"及时"，只会多一个依赖。
 
 ## 8. 验收
 
