@@ -5,6 +5,8 @@
 # kubeconfig.yaml（含集群客户端证书）、导入镜像用的 tar。这些都不能进仓库。
 # ---------------------------------------------------------------------------
 dev/render/
+deploy/cloud/render/
+deploy/cloud/env
 .buildx/
 *.tar
 *.tgz

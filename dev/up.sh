@@ -116,7 +116,7 @@ fi
 kubectl config use-context "k3d-$CLUSTER" >/dev/null 2>&1 || true
 ctx="$(kubectl config current-context 2>/dev/null || true)"
 if [ "$ctx" != "k3d-$CLUSTER" ]; then
-  echo "当前 kubectl context 是 ${ctx:-<none>}，不是 k3d-$CLUSTER，已中止：不往别的集群 apply。"
+  echo "当前 kubectl context 是 ${ctx:-<none>}，不是 k3d-${CLUSTER}，已中止：不往别的集群 apply。"
   echo "修复：k3d kubeconfig merge -a -d   或   KUBECONFIG=\$PWD/dev/render/kubeconfig.yaml ./dev/up.sh"
   exit 1
 fi

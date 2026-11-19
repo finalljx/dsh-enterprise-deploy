@@ -3,7 +3,8 @@
 ## 构建
 
 ```sh
-docker build -t registry.corp/dsh:0.2.1-alpha.4 ./image
+# 上下文是仓库根目录（要打包 plugin/）
+docker build -f image/Dockerfile -t registry.corp/dsh:0.2.1-alpha.4 .
 docker push registry.corp/dsh:0.2.1-alpha.4
 ```
 

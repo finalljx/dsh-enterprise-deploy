@@ -268,10 +268,17 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// CSRF 守卫：跨源 POST 一律拒绝。注意 "Origin: null" 表示文档源不透明
+	// （sandboxed iframe、跨源重定向后），不是同源，必须拒绝；但它也是排查时最容易被误读的
+	// 一种"403"，所以把原因写进响应和日志，别让人以为会话失效了。
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
 		if err != nil || !sameAuthority(u.Host, r.Host) {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			logFor(r.Context()).Warn("logout rejected: origin mismatch",
+				"origin", origin, "host", r.Host,
+				"hint", "浏览器请用页面上的退出按钮；curl 去掉 Origin 头或设成同源")
+			http.Error(w, "forbidden: origin mismatch (cross-site logout request)",
+				http.StatusForbidden)
 			return
 		}
 	}

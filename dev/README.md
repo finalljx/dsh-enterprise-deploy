@@ -11,20 +11,16 @@
 | Istio 通配 TLS + 子域 | 直接把 router 暴露到本机 80 | 少一层，先验身份与路由逻辑 |
 | 内部 CA 签的证书 | 同左，但主机不信任 | 用 `curl -k`，或把 `ca.crt` 加进钥匙串 |
 
-**所以本地验不了的：** 微虚拟机的内核隔离、跨节点卷重挂、故障转移 SLO、NetworkPolicy 强制。
+**所以本地验不了的：** 微虚拟机的内核隔离、跨节点卷重挂、故障转移 SLO。
 
-### NetworkPolicy 是个坑
+### NetworkPolicy 是生效的
 
-k3d 默认 CNI 是 flannel，**不强制 NetworkPolicy**。`verify.sh` 第 3 条会"通过"，但那是假通过。
+k3s 自带 network policy 控制器（kube-router），即使 CNI 是 flannel 也会**真正执行** NetworkPolicy，
+不需要换 Calico。实证：`dsh-users` 的策略只放行内网 `10.20.0.0/16`，用户 pod 访问
+`api.deepseek.com:443` 被挡；用 `up.sh` 补一条公网 443 的放行策略后立刻恢复 200。
 
-要真验，得换 Calico：
-
-```sh
-k3d cluster create dsh --k3s-arg "--flannel-backend=none@server:*" --k3s-arg "--disable-network-policy@server:*"
-kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/calico.yaml
-```
-
-代价是启动慢、调试麻烦。我的建议：**第一轮先跳过**，等路由和认证稳定了再单独验网络。
+所以 `verify.sh` 第 3 条（pod 之间不可互访）是真检查，不是假通过。
+唯一的例外是显式加了 `--disable-network-policy` 建集群——`up.sh` 没有加。
 
 ## 二、准备工作
 
@@ -88,7 +84,7 @@ SCHEME=http SKIP_KATA=1 ./verify.sh
 | pod 就绪 / owner 标记 | 能 |
 | runtimeClassName + guest 内核 | **不能**（`SKIP_KATA=1` 跳过） |
 | 准入策略拒绝错误 PVC 绑定 | 能（k3s ≥ 1.30） |
-| pod 之间不可互访 | **假通过**（flannel 不强制 NetworkPolicy） |
+| pod 之间不可互访 | 能（k3s 内置 netpol 控制器会执行，实测有效） |
 | 未认证访问跳 SSO | 能 |
 | 跨身份访问 403 | 能 |
 | 重定向不含 token | 能 |

@@ -38,6 +38,14 @@ type Record struct {
 	DesiredState string `json:"desiredState"`
 }
 
+// dshSession 缓存"用 launch token 换来的 DSH cookie"。
+// 必须连 token 一起存：pod 重启会换 token，旧 cookie 立即失效；
+// 只按 subject 缓存会让用户在被回收器休眠/唤醒后一直 401，直到 router 重启。
+type dshSession struct {
+	cookie string
+	token  string
+}
+
 type Server struct {
 	controlURL    string
 	routerToken   string
@@ -49,7 +57,7 @@ type Server struct {
 	publicScheme  string
 	devSubject    string
 	transport     sync.Map // podIP -> *http.Transport
-	dshCookies    sync.Map // subject -> string
+	dshCookies    sync.Map // subject -> dshSession
 	cookieSecure  bool
 	brand         string
 	loginMode     string
@@ -257,7 +265,11 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 // dshCookie 用 launch token 换 DSH cookie，并按 pod 缓存。
 func (s *Server) dshCookie(ctx context.Context, rec Record) (string, error) {
 	if v, ok := s.dshCookies.Load(rec.Subject); ok {
-		return v.(string), nil
+		if sess, ok := v.(dshSession); ok && sess.token == rec.LaunchToken {
+			return sess.cookie, nil
+		}
+		// pod 重启过：launch token 变了，旧 cookie 已失效，必须重新换
+		s.dshCookies.Delete(rec.Subject)
 	}
 	u := "https://" + rec.PodIP + ":" + s.podPort + "/?token=" + url.QueryEscape(rec.LaunchToken)
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
@@ -278,7 +290,7 @@ func (s *Server) dshCookie(ctx context.Context, rec Record) (string, error) {
 	for _, c := range resp.Cookies() {
 		if resp.StatusCode/100 == 3 {
 			v := c.Name + "=" + c.Value
-			s.dshCookies.Store(rec.Subject, v)
+			s.dshCookies.Store(rec.Subject, dshSession{cookie: v, token: rec.LaunchToken})
 			return v, nil
 		}
 	}

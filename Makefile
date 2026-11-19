@@ -38,22 +38,24 @@ example-user:
 image:
 	@test -n "$$DSH_REGISTRY" || { echo "DSH_REGISTRY 未设置，例如 registry.corp"; exit 1; }
 	@test -n "$$DSH_VERSION" || { echo "DSH_VERSION 未设置，例如 0.2.1-alpha.4"; exit 1; }
-	docker build -t $$DSH_REGISTRY/dsh:$$DSH_VERSION ./image
+	docker build --platform linux/amd64 -f image/Dockerfile \
+	  --build-arg NPM_REGISTRY=$${NPM_REGISTRY:-https://registry.npmmirror.com} \
+	  -t $$DSH_REGISTRY/dsh:$$DSH_VERSION .
 	docker push $$DSH_REGISTRY/dsh:$$DSH_VERSION
 
 router-image:
 	@test -n "$$DSH_REGISTRY" || { echo "DSH_REGISTRY 未设置，例如 registry.corp"; exit 1; }
-	docker build -t $$DSH_REGISTRY/dsh-router:0.1.0 ./router
+	docker build --platform linux/amd64 -t $$DSH_REGISTRY/dsh-router:0.1.0 ./router
 	docker push $$DSH_REGISTRY/dsh-router:0.1.0
 
 control-image:
 	@test -n "$$DSH_REGISTRY" || { echo "DSH_REGISTRY 未设置，例如 registry.corp"; exit 1; }
-	docker build -t $$DSH_REGISTRY/dsh-control:0.1.0 ./control
+	docker  build --platform linux/amd64 -t $$DSH_REGISTRY/dsh-control:0.1.0 ./control
 	docker push $$DSH_REGISTRY/dsh-control:0.1.0
 
 reaper-image:
 	@test -n "$$DSH_REGISTRY" || { echo "DSH_REGISTRY 未设置，例如 registry.corp"; exit 1; }
-	docker build -t $$DSH_REGISTRY/dsh-reaper:0.1.0 ./reaper
+	docker build --platform linux/amd64 -t $$DSH_REGISTRY/dsh-reaper:0.1.0 ./reaper
 	docker push $$DSH_REGISTRY/dsh-reaper:0.1.0
 
 user:

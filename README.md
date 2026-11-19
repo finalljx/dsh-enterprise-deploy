@@ -77,3 +77,6 @@ verify.sh          验收脚本
 ## 本地验证
 
 macOS + k3d 的准备工作与可验证范围见 [dev/README.md](dev/README.md)，一条命令启动：`./dev/up.sh`。
+
+云上全链路验证（含 Kata 微虚拟机隔离）见 [deploy/cloud/README.md](deploy/cloud/README.md)：
+`preflight.sh` 体检 → `install-kata.sh` → `verify-kata.sh` → `up.sh`。

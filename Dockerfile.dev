@@ -3,12 +3,16 @@
 #   docker build -f Dockerfile.dev -t dsh/dsh:local .
 FROM node:22-bookworm-slim
 
+# 国内网络：npm 走镜像源，可用 --build-arg NPM_REGISTRY=... 覆盖
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
 RUN apt-get update \
  && apt-get install -y --no-install-recommends jq curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # pnpm 是 `dsh plugin add` 的安装器，node 镜像里没有，缺了插件会静默装不上
-RUN npm i -g @deepseek-ai/dsh@0.2.1-alpha.4 pnpm@10 && npm cache clean --force
+RUN npm i -g --registry="${NPM_REGISTRY}" @deepseek-ai/dsh@0.2.1-alpha.4 pnpm@10 \
+ && npm cache clean --force
 # node:22 官方镜像里已经有 uid 1000 的 node 用户，useradd -u 1000 会报 UID 冲突；
 # manifest 要求 runAsUser: 1000，所以复用该用户、改名并把家目录挪到 /home/dsh
 RUN usermod -l dsh -d /home/dsh -m -s /bin/bash node
