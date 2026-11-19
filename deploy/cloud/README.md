@@ -251,7 +251,7 @@ DSH_REGISTRY=... DSH_DOMAIN=dsh.example.com DEEPSEEK_API_KEY=sk-... \
 ALB_MODE=1 DEEPSEEK_API_KEY=sk-... ./deploy/cloud/up.sh
 ```
 
-它做四件事：
+它会先按 `NODE_PORT`（默认 31147）把 Service 的 nodePort 固定下来，然后做四件事：
 
 1. Service 改成 `NodePort` + `externalTrafficPolicy: Local`
    （kube-proxy 只转本节点 pod，ALB 探测语义才准确；节点没 pod 该后端自然不通）
@@ -264,7 +264,7 @@ ALB 侧照这个配：
 
 | 项 | 值 |
 |---|---|
-| 后端协议 / 端口 | HTTP / 打印出来的 NodePort |
+| 后端协议 / 端口 | HTTP / `NODE_PORT`（默认 31147，可改；集群重建后不会漂） |
 | 健康检查 | `GET /healthz`，间隔 10s，超时 5s，不健康 3 次 |
 | Host | **原样透传**，改写会导致 router 的 Host 校验 403 |
 | 会话保持 | 不需要（会话在 cookie 里） |

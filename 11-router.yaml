@@ -100,4 +100,6 @@ kind: Service
 metadata: { name: dsh-router, namespace: dsh-system, labels: { app: dsh-router } }
 spec:
   selector: { app: dsh-router }
-  ports: [{ port: 8080, targetPort: 8080 }]
+  # 固定 nodePort：ALB 后端是按端口配置的，集群重建后端口漂移会导致整条链路 502。
+  # 想换端口改这里（或 up.sh 的 NODE_PORT），范围必须 30000–32767 且集群内唯一。
+  ports: [{ port: 8080, targetPort: 8080, nodePort: 31147 }]

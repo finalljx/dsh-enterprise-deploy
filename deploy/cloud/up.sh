@@ -44,12 +44,20 @@ DSH_RUNTIME_CLASS="${DSH_RUNTIME_CLASS:-kata-clh-runtime-rs}"
 DISABLE_KATA="${DISABLE_KATA:-0}"
 PULL_SECRET="${PULL_SECRET:-}"
 ADMIN_SUBJECT="${ADMIN_SUBJECT:-alice@corp}"
+# 与 control/provision.go 的 slugFor 保持一致：取 @ 前、小写、非 [a-z0-9-] 变 -
+slug_of() {
+  printf '%s' "${1%%@*}" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9-]/-/g' -e 's/^-*//' -e 's/-*$//'
+}
+ADMIN_SLUG="$(slug_of "$ADMIN_SUBJECT")"
+PF_PORT="${PF_PORT:-0}"   # 0 = 让内核挑一个空闲端口
 # 真实场景验证要带 Istio 入口（TLS 终止 + 通配证书 + *.domain 路由）
 WITH_ISTIO="${WITH_ISTIO:-0}"
 # 验证阶段没有 IdP 时保留 dev 登录；接真实 IdP 时设 0，并给 SSO_URL
 KEEP_DEV_LOGIN="${KEEP_DEV_LOGIN:-1}"
 # ALB 在本项目外部终止 TLS：集群内用 HTTP + NodePort，不需要 Istio
 ALB_MODE="${ALB_MODE:-0}"
+# ALB 后端端口：固定下来，避免集群重建后自动分配的端口漂移
+NODE_PORT="${NODE_PORT:-31147}"
 SSO_URL="${SSO_URL:-}"
 # 边缘证书的 issuer：默认用仓库自带的内部 CA（浏览器不信任，只适合 curl -k）。
 # 要浏览器绿锁，换成你的公网 issuer（如 Let's Encrypt + DNS-01 webhook）。
@@ -236,8 +244,14 @@ step_secrets() {
 
   MODEL_KEY="${DEEPSEEK_API_KEY:-dummy}"
   [ "$MODEL_KEY" = "dummy" ] && echo "  WARN: 没有 DEEPSEEK_API_KEY，端到端对话会失败（结构验证不受影响）"
-  kubectl -n "$NS_USERS" create secret generic dsh-model-token-alice \
-    --from-literal=token="$MODEL_KEY" --dry-run=client -o yaml | kubectl apply -f -
+  # 名字必须跟开通时的 slug 一致（provision.go 用的是 dsh-model-token-<slug>），
+  # 否则 control 会以为「缺模型密钥」而拒绝开通。
+  if [ "${MODEL_KEY}" = "dummy" ] && kubectl -n "${NS_USERS}" get secret "dsh-model-token-${ADMIN_SLUG}" >/dev/null 2>&1; then
+    echo "  已是 dummy 且密钥已存在，保留原值（不覆盖真实 token）"
+  else
+    kubectl -n "${NS_USERS}" create secret generic "dsh-model-token-${ADMIN_SLUG}" \
+      --from-literal=token="${MODEL_KEY}" --dry-run=client -o yaml | kubectl apply -f -
+  fi
 }
 
 step_render() {
@@ -251,6 +265,7 @@ step_render() {
     "s#registry.corp/dsh-reaper:0.1.0#$DSH_REGISTRY/dsh-reaper:$REPO_TAG#g"
     "s#registry.corp/dsh:0.2.1-alpha.4#$DSH_REGISTRY/dsh:$DSH_VERSION#g"
     "s#storageClassName: dsh-rbd#storageClassName: $DSH_STORAGE_CLASS#g"
+    "s#nodePort: 31147#nodePort: $NODE_PORT#g"
   )
   local args=() e f
   for e in "${subs[@]}"; do args+=(-e "$e"); done
@@ -384,20 +399,93 @@ EOF
 }
 
 step_provision() {
-  say "8/9 开通示例用户"
+  say "8/9 开通 ${ADMIN_SUBJECT}"
   if [ "${SKIP_PROVISION:-0}" = "1" ]; then
     echo "  SKIP_PROVISION=1，跳过"
-    return
+    return 0
   fi
-  kubectl -n "$NS_SYS" port-forward svc/dsh-control 18080:8080 >/dev/null 2>&1 &
-  local pf=$!
-  for _ in $(seq 1 30); do
-    curl -sf http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break
+
+  # 端口别写死：18080 被占时 port-forward 会静默退出，最后只看到 connection refused，很难查。
+  if [ "${PF_PORT}" = "0" ]; then
+    PF_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+  fi
+
+  local pflog pf ok_url rc
+  pflog=$(mktemp -t dshpf)
+  kubectl -n "${NS_SYS}" port-forward svc/dsh-control "${PF_PORT}:8080" >"${pflog}" 2>&1 &
+  pf=$!
+  ok_url=0
+  for _ in $(seq 1 40); do
+    kill -0 "${pf}" 2>/dev/null || break
+    if curl -sf -m 1 "http://127.0.0.1:${PF_PORT}/healthz" >/dev/null 2>&1; then ok_url=1; break; fi
+    sleep 0.5
+  done
+  if [ "${ok_url}" != "1" ]; then
+    echo "  port-forward 没起来（端口 ${PF_PORT}）：" >&2
+    tail -5 "${pflog}" >&2 || true
+    kill "${pf}" 2>/dev/null || true
+    wait "${pf}" 2>/dev/null || true
+    rm -f "${pflog}"
+    exit 1
+  fi
+
+  # 只有拿到真实 key 才传 --model-token；否则不传，让 control 复用已有 Secret，
+  # 避免把线上真实的 token 覆盖成 dummy。
+  local token_args=()
+  case "${MODEL_KEY:-}" in
+    ""|dummy) : ;;
+    *) token_args=(--model-token "${MODEL_KEY}") ;;
+  esac
+
+  rc=0
+  ADMIN_TOKEN="${ADMIN_TOKEN}" python3 provision.py "${ADMIN_SUBJECT}" \
+    --tier T1 ${token_args[@]+"${token_args[@]}"} \
+    --control-url "http://127.0.0.1:${PF_PORT}" || rc=$?
+
+  # 已存在的用户可能处于 sleeping：UpsertUser 刻意不覆盖 desired_state，
+  # 所以重新开通不会自动醒。开通语义是「可用」，这里显式唤醒。
+  if [ "${rc}" -eq 0 ]; then
+    cur=$(curl -sf -m 3 -H "Authorization: Bearer ${ROUTER_TOKEN}" \
+      "http://127.0.0.1:${PF_PORT}/internal/lookup?subject=${ADMIN_SUBJECT}" 2>/dev/null \
+      | sed -n 's/.*"desiredState":"\([^"]*\)".*/\1/p')
+    if [ -n "${cur}" ] && [ "${cur}" != "running" ]; then
+      if curl -sf -m 3 -X POST -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+           -H 'content-type: application/json' \
+           -d "{\"subject\":\"${ADMIN_SUBJECT}\",\"desiredState\":\"running\"}" \
+           "http://127.0.0.1:${PF_PORT}/internal/desired" >/dev/null 2>&1; then
+        echo "  期望状态 ${cur} → running（已唤醒）"
+      else
+        echo "  WARN: 唤醒失败，该用户可能仍处于 ${cur}"
+      fi
+    fi
+  fi
+
+  kill "${pf}" 2>/dev/null || true
+  wait "${pf}" 2>/dev/null || true
+  rm -f "${pflog}"
+  if [ "${rc}" -ne 0 ]; then
+    echo "  开通失败（provision.py 退出码 ${rc}）" >&2
+    exit "${rc}"
+  fi
+
+  # 打印该用户实际的访问地址：协议取决于入口模式
+  local scheme=http host
+  if [ "${ALB_MODE}" = "1" ] || [ "${WITH_ISTIO}" = "1" ]; then scheme=https; fi
+  host="${ADMIN_SLUG}.${DSH_DOMAIN}"
+  echo "  访问地址: ${scheme}://${host}"
+  echo "  等待 pod 就绪（最长 120s）..."
+  local i ready
+  for i in $(seq 1 120); do
+    ready=$(kubectl -n "${NS_USERS}" get deploy "dsh-${ADMIN_SLUG}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
+    if [ "${ready}" = "1" ]; then
+      echo "  ✅ dsh-${ADMIN_SLUG} 已就绪："
+      kubectl -n "${NS_USERS}" get pod -o wide --no-headers 2>/dev/null | grep "dsh-${ADMIN_SLUG}-" | head -3
+      return 0
+    fi
     sleep 1
   done
-  ADMIN_TOKEN="$ADMIN_TOKEN" python3 provision.py "$ADMIN_SUBJECT" \
-    --tier T1 --control-url http://127.0.0.1:18080
-  kill "$pf" 2>/dev/null || true
+  echo "  WARN: 120s 内未就绪，看 kubectl -n ${NS_USERS} get pod / describe"
+  return 0
 }
 
 step_done() {
