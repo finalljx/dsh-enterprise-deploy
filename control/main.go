@@ -120,6 +120,11 @@ func main() {
 			http.Error(w, "missing subject", http.StatusBadRequest)
 			return
 		}
+		// 单位归一：库里统一用秒。历史上插件传过毫秒（1.7e12），
+		// 不纠正会让 last_activity_at 永远大于 cutoff，用户永不休眠。
+		if body.LastActivityAt > 1e12 {
+			body.LastActivityAt /= 1000
+		}
 		ok, err := store.Touch(r.Context(), body.Subject, body.OpenTurn, body.LastActivityAt)
 		if err != nil {
 			http.Error(w, "store error", http.StatusInternalServerError)

@@ -41,10 +41,29 @@ if [ ! -d "$DSH_HOME/profiles/web/node_modules/@corp/dsh-plugin-activity" ] \
   cp -a /opt/dsh/profile-seed/profiles/web/node_modules "$DSH_HOME/profiles/web/"
 fi
 
+# 插件必须能被 Node 解析。pnpm 生成的是相对软链（../../../../../../plugin），
+# 从 /opt/dsh/profile-seed 复制到 /data/dsh 后深度变了，链接会指向不存在的 /plugin，
+# 表现为 "1 entry did not activate / ERR_MODULE_NOT_FOUND"，活动上报静默失效。
+# 这里统一改成指向 /opt/plugin 的绝对链接，旧卷也会被修好。
+PLUGIN_LINK="$DSH_HOME/profiles/web/node_modules/@corp/dsh-plugin-activity"
+if [ -f /opt/plugin/package.json ]; then
+  mkdir -p "$(dirname "$PLUGIN_LINK")"
+  rm -rf "$PLUGIN_LINK"
+  ln -s /opt/plugin "$PLUGIN_LINK"
+fi
+
 # kubelet 挂卷时 fsGroup 会把文件权限放宽到 660，DSH 拒绝「组可读」的凭据文件
 if [ -f "$DSH_HOME/.credentials.yaml" ]; then
   chmod 600 "$DSH_HOME/.credentials.yaml"
 fi
+
+# 工作区必须落在 PVC 上：
+#   1) dsh 的默认工作区根 = 进程启动时的 cwd
+#   2) 用户通过目录选择器建的工作区通常在 $HOME 下
+# 两者原本都在容器临时层，pod 重启即丢失。这里把 HOME 指到卷上，并从那里启动。
+export HOME="$DSH_HOME/home"
+mkdir -p "$HOME"
+cd "$HOME"
 
 LOG=/tmp/dsh-web.log
 : > "$LOG"

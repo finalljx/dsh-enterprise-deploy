@@ -22,7 +22,7 @@ RUN npm i -g --registry="${NPM_REGISTRY}" \
 
 # node:22 里已有 uid 1000 的 node 用户，useradd -u 1000 会报 UID 冲突；
 # manifest 要求 runAsUser: 1000，所以复用该用户、改名并把家目录挪到 /home/dsh
-RUN usermod -l dsh -d /home/dsh -m -s /bin/bash node
+RUN usermod -l dsh -d /data/dsh/home -s /bin/bash node
 
 ENV HOME=/home/dsh \
     NODE_ENV=production \
@@ -37,7 +37,9 @@ RUN chmod 0755 /opt/dsh/*.sh && chmod 0644 /opt/dsh/profile/cordis.patch.yml
 COPY plugin /opt/plugin
 RUN mkdir -p /opt/dsh/profile-seed \
  && DSH_HOME=/opt/dsh/profile-seed dsh plugin --profile web add /opt/plugin \
- && test -d /opt/dsh/profile-seed/profiles/web/node_modules/@corp/dsh-plugin-activity
+ && rm -rf /opt/dsh/profile-seed/profiles/web/node_modules/@corp/dsh-plugin-activity \
+ && ln -s /opt/plugin /opt/dsh/profile-seed/profiles/web/node_modules/@corp/dsh-plugin-activity \
+ && test -f /opt/dsh/profile-seed/profiles/web/node_modules/@corp/dsh-plugin-activity/package.json
 
 USER 1000
 EXPOSE 8443

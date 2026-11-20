@@ -331,6 +331,28 @@ curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
 **定时清理**：`Store.DeletedBefore(duration)` 已就绪，后续在 control 里挂一个
 定时任务调用 `Purge` 即可（软删除超过 N 天的行才真正消失）。
 
+## 7.4.1 工作区持久化
+
+DSH 有两个"路径"决定用户文件放哪：
+
+| 路径 | 来源 | 是否在 PVC 上 |
+|---|---|---|
+| 默认工作区根 | `dsh web` 进程启动时的 **cwd** | ✅ `/data/dsh/home` |
+| 用户自建工作区 | 目录选择器里填的路径，通常在 `$HOME` 下 | ✅ 因为 `HOME` 也在卷上 |
+
+`entrypoint.sh` 会做三件事，缺一个重启就丢文件：
+
+```sh
+export HOME="$DSH_HOME/home"   # 家目录落在卷上
+mkdir -p "$HOME"
+cd "$HOME"                     # 默认工作区根也在卷上
+```
+
+镜像里 `usermod` 的 home 也指向 `/data/dsh/home`，不依赖 `$HOME` 的工具同样找得对。
+
+> 升级前的老卷：`/home/dsh` 下的文件本来就随 pod 消失，无需迁移；但
+> `$DSH_HOME/storages/workspace.json` 里可能残留指向旧路径的工作区条目，在界面里删掉即可。
+
 ## 7.5 升级 DSH 版本
 
 两个概念要分开：

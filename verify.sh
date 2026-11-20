@@ -148,5 +148,104 @@ fi
 STATE=$(tr -d '\r' < /tmp/dsh-verify-h 2>/dev/null | sed -n 's/^[Xx]-[Dd][Ss][Hh]-[Ss]tate: //p')
 [ -n "$STATE" ] && printf '  当前状态：%s\n' "$STATE"
 
+say "9. 活动上报插件真的被加载（否则回收器会把活跃用户休眠）"
+# 注意：dsh web 的日志在容器内 /tmp/dsh-web.log，stdout 只有一行 registered。
+POD_NAME=$(kubectl -n "$NS" get pod -l "dsh.corp/user=$LABEL" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [ -z "$POD_NAME" ]; then
+  bad "找不到用户 pod，无法验证 activity 插件"
+else
+  # ① 激活失败会在启动日志里留痕（"did not activate" / ERR_MODULE_NOT_FOUND）
+  HIT=$(kubectl -n "$NS" exec "$POD_NAME" -c dsh -- sh -c \
+    'grep -E "did not activate|ERR_MODULE_NOT_FOUND" /tmp/dsh-web.log' 2>/dev/null || true)
+  if [ -z "$HIT" ]; then
+    ok "启动日志里没有插件激活失败"
+  else
+    bad "插件未激活：${HIT}"
+  fi
+
+  # ② 软链必须能解析到真实的 package.json（-d 对断链为假，-f 才跟随）
+  if kubectl -n "$NS" exec "$POD_NAME" -c dsh -- sh -c \
+       'test -f /data/dsh/profiles/web/node_modules/@corp/dsh-plugin-activity/package.json' 2>/dev/null; then
+    ok "插件包可解析（$(kubectl -n "$NS" exec "$POD_NAME" -c dsh -- \
+      readlink -f /data/dsh/profiles/web/node_modules/@corp/dsh-plugin-activity 2>/dev/null)）"
+  else
+    bad "插件包解析不到：/data/dsh/profiles/web/node_modules/@corp/dsh-plugin-activity 断了"
+  fi
+
+  # ③ 端到端：心跳每 15s 刷新 updated_at，超过 90s 说明上报没到 control
+  AGE=$(kubectl -n dsh-system exec dsh-postgres-0 -- psql -U dsh -d dsh -tAc \
+    "SELECT COALESCE(round(extract(epoch FROM now()-updated_at))::text,'') FROM dsh_users WHERE subject='$PRINCIPAL'" 2>/dev/null | tr -d ' ')
+  case "$AGE" in
+    '') bad "数据库里没有 $PRINCIPAL 的记录" ;;
+    *[!0-9]*) bad "查询活动时间失败：${AGE}" ;;
+    *) if [ "$AGE" -le 90 ]; then
+         ok "control 侧心跳 ${AGE}s 内刷新过（插件在真上报）"
+       else
+         bad "control 侧 ${AGE}s 没有刷新，插件可能没在跑或连不上 control"
+       fi ;;
+  esac
+fi
+
+say "10. 工作区与家目录落在 PVC 上（否则 pod 重启即丢文件）"
+POD_NAME=$(kubectl -n "$NS" get pod -l "dsh.corp/user=$LABEL" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [ -z "$POD_NAME" ]; then
+  bad "找不到用户 pod，无法验证工作区持久化"
+else
+  # ① 静态检查：dsh 进程的 HOME 与 cwd 都必须在 /data/dsh 下
+  PROC_INFO=$(kubectl -n "$NS" exec "$POD_NAME" -c dsh -- sh -c '
+    for d in /proc/[0-9]*; do
+      cmd=$(tr "\0" " " < "$d/cmdline" 2>/dev/null)
+      case "$cmd" in
+        *"dsh web"*)
+          home=$(tr "\0" "\n" < "$d/environ" 2>/dev/null | sed -n "s/^HOME=//p")
+          echo "$home $(readlink "$d/cwd")"
+          break;;
+      esac
+    done' 2>/dev/null)
+  PROC_HOME=${PROC_INFO%% *}
+  PROC_CWD=${PROC_INFO#* }
+  case "$PROC_HOME" in
+    /data/dsh/*) ok "dsh 进程 HOME=${PROC_HOME}（在卷上）" ;;
+    "")          bad "读不到 dsh 进程的 HOME（进程没起或 /proc 不可读）" ;;
+    *)           bad "dsh 进程 HOME=${PROC_HOME}，不在卷上，重启会丢文件" ;;
+  esac
+  case "$PROC_CWD" in
+    /data/dsh/*) ok "默认工作区根 cwd=${PROC_CWD}（在卷上）" ;;
+    *)           bad "dsh 进程 cwd=${PROC_CWD}，不在卷上，默认工作区重启即丢" ;;
+  esac
+
+  # ② 破坏性验证：写标记 → 删 pod → 等新 pod → 标记仍在（需 PERSIST_TEST=1）
+  if [ "${PERSIST_TEST:-0}" != "1" ]; then
+    printf '  提示：设 PERSIST_TEST=1 可做"重启后文件仍在"的实测（会重启该用户的 pod）\n'
+  else
+    MARK="verify-persist-$$.txt"
+    MARK_PATH="/data/dsh/home/$MARK"
+    if kubectl -n "$NS" exec "$POD_NAME" -c dsh -- sh -c "date > '$MARK_PATH'" 2>/dev/null; then
+      BEFORE=$(kubectl -n "$NS" exec "$POD_NAME" -c dsh -- sh -c "cat '$MARK_PATH'" 2>/dev/null)
+      kubectl -n "$NS" delete pod "$POD_NAME" >/dev/null 2>&1 || true
+      NEW_POD=""
+      for _ in $(seq 1 60); do
+        NEW_POD=$(kubectl -n "$NS" get pod -l "dsh.corp/user=$LABEL" --no-headers 2>/dev/null \
+          | awk '$2=="1/1"{print $1}' | head -1)
+        [ -n "$NEW_POD" ] && [ "$NEW_POD" != "$POD_NAME" ] && break
+        sleep 2
+      done
+      if [ -z "$NEW_POD" ]; then
+        bad "重启后 120s 内没有就绪的新 pod"
+      else
+        AFTER=$(kubectl -n "$NS" exec "$NEW_POD" -c dsh -- sh -c "cat '$MARK_PATH'" 2>/dev/null)
+        if [ -n "$AFTER" ] && [ "$AFTER" = "$BEFORE" ]; then
+          ok "pod 重启后 $MARK_PATH 仍在（${AFTER}）"
+        else
+          bad "pod 重启后 $MARK_PATH 丢失（写入=${BEFORE:-无}，读回=${AFTER:-无}）"
+        fi
+        kubectl -n "$NS" exec "$NEW_POD" -c dsh -- sh -c "rm -f '$MARK_PATH'" 2>/dev/null || true
+      fi
+    else
+      bad "无法在 $MARK_PATH 写文件（HOME 不可写？）"
+    fi
+  fi
+fi
+
 printf '\n===== 失败项：%d =====\n' "$FAIL"
 exit $((FAIL > 0))

@@ -41,8 +41,12 @@ export function apply(ctx, config) {
   const parsed = Number(process.env.ACTIVITY_INTERVAL_MS ?? DEFAULT_INTERVAL_MS)
   const intervalMs = Number.isFinite(parsed) && parsed >= 1000 ? parsed : DEFAULT_INTERVAL_MS
 
+  // control 侧用秒（time.Now().Unix()）比较空闲时间；这里必须同单位，
+  // 传毫秒会让 last_activity_at 变成 1.7e12，空闲判断永远为假（用户永不休眠）。
+  const nowSeconds = () => Math.floor(Date.now() / 1000)
+
   let openTurn = false
-  let lastActivityAt = Date.now()
+  let lastActivityAt = nowSeconds()
   let disposed = false
 
   async function report() {
@@ -64,7 +68,7 @@ export function apply(ctx, config) {
   }
 
   ctx.on('session/event', (_session, event) => {
-    lastActivityAt = Date.now()
+    lastActivityAt = nowSeconds()
     if (event.type === 'turn/start') {
       openTurn = true
       void report()
