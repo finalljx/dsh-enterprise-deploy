@@ -13,7 +13,10 @@
 #   ./deploy/cloud/up.sh
 #
 # 可选：
-#   DSH_VERSION=0.2.1-alpha.4     镜像 tag
+#   DSH_VERSION=0.2.1-alpha.4     镜像里装的 DSH 包版本
+#   IMAGE_TAG=0.2.1-alpha.4-r2    镜像 tag（默认等于 DSH_VERSION）
+#   REFRESH_RUNNING=1             连运行中的用户也换镜像（会重启，打断进行中的 turn）
+#   RENDER_ONLY=1                 只渲染清单、不碰集群（make render 在用）
 #   DSH_STORAGE_CLASS=local-path  存储类
 #   DSH_RUNTIME_CLASS=kata-clh-runtime-rs
 #   PULL_SECRET=acr-pull          私仓拉取密钥（需你事先在两个命名空间里创建）
@@ -263,6 +266,9 @@ step_secrets() {
 step_render() {
   say "5/9 渲染清单（registry / storageClass / 镜像 tag）"
   mkdir -p "$RENDER"
+  # 先清掉上一次的产物：残留的旧 tag 文件最容易被误 apply（例如上一轮留下的
+  # DSH_IMAGE=dsh/dsh:local）。渲染是幂等的，删了立刻重建。
+  rm -f "$RENDER"/*.yaml
   # 只替换镜像前缀与存储类；域名走环境变量，避免动到 dsh.corp/user 这类标签键。
   # 左边是清单里的固定写法（源 tag 写死 0.1.0 / 0.2.1-alpha.4），右边才是目标值。
   local subs=(
@@ -271,11 +277,18 @@ step_render() {
     "s#registry.corp/dsh-reaper:0.1.0#$DSH_REGISTRY/dsh-reaper:$REPO_TAG#g"
     "s#registry.corp/dsh:0.2.1-alpha.4#$DSH_REGISTRY/dsh:$IMAGE_TAG#g"
     "s#storageClassName: dsh-rbd#storageClassName: $DSH_STORAGE_CLASS#g"
+    # control 的 DSH_STORAGE_CLASS 环境变量同样是 dsh-rbd 占位值，
+    # 不换的话直接 apply 渲染产物会用到不存在的存储类（step_apps 会 set env 兜住，但别依赖它）
+    "s#value: dsh-rbd#value: $DSH_STORAGE_CLASS#g"
     "s#nodePort: 31147#nodePort: $NODE_PORT#g"
+    # 只有示例清单里有完整的 "alice.dsh.corp"，不会碰到 dsh.corp/user 标签键
+    "s#alice\.dsh\.corp#alice.$DSH_DOMAIN#g"
   )
   local args=() e f
   for e in "${subs[@]}"; do args+=(-e "$e"); done
-  for f in 09-postgres 10-control 11-router 13-reaper; do
+  # 14-example-user 也要渲染：它同样写死了 registry.corp / dsh-rbd，
+  # 不渲染的话拿它做 dry-run 或 apply 都会指向不存在的仓库。
+  for f in 09-postgres 10-control 11-router 13-reaper 14-example-user; do
     sed "${args[@]}" "$f.yaml" > "$RENDER/$f.yaml"
   done
   echo "  渲染到 $RENDER/"
@@ -298,7 +311,7 @@ step_apps() {
     DSH_IMAGE="$DSH_REGISTRY/dsh:$IMAGE_TAG" \
     DSH_STORAGE_CLASS="$DSH_STORAGE_CLASS" \
     DSH_RUNTIME_CLASS="$DSH_RUNTIME_CLASS" \
-    DSH_BASE_DOMAIN="$DSH_DOMAIN" \
+    DSH_BASE_DOMAIN="$DSH_DOMAIN"
   kubectl -n "$NS_SYS" rollout status deploy/dsh-control --timeout=300s
 
   kubectl apply -f "$RENDER/11-router.yaml"
@@ -314,6 +327,19 @@ step_apps() {
 
   kubectl apply -f "$RENDER/13-reaper.yaml"
   kubectl -n "$NS_SYS" rollout status deploy/dsh-reaper --timeout=180s
+}
+
+step_refresh_users() {
+  say "7.4/9 对齐存量用户镜像"
+  # control 的 DSH_IMAGE 只在启动时读一次（上面 set env 会让它重启，所以已经是新值），
+  # 但用户 Deployment 的 image 只在「开通 / 重新开通」时写入。reaper 的 scale
+  # 0→1 只改副本数、不重写 template，所以换 IMAGE_TAG 后必须显式对齐，
+  # 否则新开通的用户用新镜像、老用户继续跑旧镜像。
+  local extra=()
+  [ "${REFRESH_RUNNING:-0}" = "1" ] && extra+=(--include-running)
+  # ENV_FILE 透传：up.sh 支持用 ENV_FILE 指向另一份配置，子脚本要读同一份
+  ENV_FILE="$ENV_FILE" DSH_IMAGE="$DSH_REGISTRY/dsh:$IMAGE_TAG" \
+    ./deploy/cloud/refresh-users.sh ${extra[@]+"${extra[@]}"}
 }
 
 step_istio() {
@@ -531,6 +557,14 @@ step_done() {
 EOF
 }
 
+# 只渲染不部署：make render / make example-user 用，也方便在没有集群的机器上看产物。
+# 必须放在函数定义之后、step_check 之前 —— 渲染不需要集群。
+if [ "${RENDER_ONLY:-0}" = "1" ]; then
+  step_render
+  echo "  RENDER_ONLY=1：只渲染，没有 apply"
+  exit 0
+fi
+
 step_check
 step_certs
 step_base
@@ -539,6 +573,7 @@ step_secrets
 step_render
 step_database
 step_apps
+step_refresh_users
 step_istio
 step_alb
 step_provision

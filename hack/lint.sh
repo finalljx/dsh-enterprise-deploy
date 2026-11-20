@@ -65,7 +65,12 @@ for pat in "sed -i ''" "readlink -f" "stat -c" "date -d "; do
   fi
 done
 
-say "4. Go 格式"
+say "4. 续行吞掉下一条命令"
+# `kubectl set env ... \` 末尾多一个反斜杠，会把下一行 kubectl 当成参数，
+# 报 "unknown flag: --timeout"；bash -n 查不出（语法合法），只能靠这条规则。
+if python3 hack/check-continuations.py; then :; else FAIL=$((FAIL + 1)); fi
+
+say "5. Go 格式"
 if command -v go >/dev/null 2>&1; then
   for d in control router; do
     out=$(cd "$d" && gofmt -l . 2>/dev/null)

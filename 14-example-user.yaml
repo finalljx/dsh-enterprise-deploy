@@ -1,5 +1,11 @@
 # 步骤 12：一个用户的完整资源（示例，实际由控制面的开通 API 生成）
 #
+# ⚠️ 不要直接 kubectl apply。这份文件里的镜像仓库、存储类、域名都是占位值，
+#    直接 apply 会指向一个不存在的仓库和存储类。正确用法：
+#      make render        # 渲染到 deploy/cloud/render/14-example-user.yaml
+#      make example-user  # 对渲染结果做 --dry-run=server 校验
+#    真开通用户走 API：./provision.py alice@corp
+#
 # 三个事实必须一致：
 #   pod 标签      dsh.corp/user=alice_corp（userId 的 @ 换成 _）
 #   pod 注解      dsh.corp/home-claim=dsh-home-<hash>

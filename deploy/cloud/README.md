@@ -355,14 +355,24 @@ $EDITOR deploy/cloud/env          # DSH_VERSION=0.2.2-rc.5
 # 2. 只看有哪些版本可选
 curl -s https://registry.npmmirror.com/@deepseek-ai%2fdsh | jq -r '.versions|keys[]' | tail
 
-# 3. 重建并推送用户镜像
+# 3. 重建并推送用户镜像（同名 tag 会被拦下，见下面注意事项）
 IMAGES="dsh" ./deploy/cloud/push-images.sh
 
-# 4. 让控制面对"新开通的用户"用新镜像（重跑渲染即可）
-.\/deploy/cloud/up.sh
+# 4. 部署：control 拿到新的 DSH_IMAGE，并顺带对齐存量用户
+./deploy/cloud/up.sh
 ```
 
-已有用户**不会自动升级**（它们的 Deployment 里写死了旧 tag）。逐个切换：
+`up.sh` 的 `7.4/9` 步会调用 `deploy/cloud/refresh-users.sh`，把存量用户
+Deployment 的镜像改成新的 `IMAGE_TAG`。**默认只改已休眠的用户**：改运行中
+pod 的 template 会触发 Recreate 重启，正在进行的 turn 会被打断。
+
+```sh
+./deploy/cloud/refresh-users.sh                    # 只对齐休眠的
+./deploy/cloud/refresh-users.sh --dry-run          # 先看要改哪些
+./deploy/cloud/refresh-users.sh --include-running  # 连运行中的一起换（会重启）
+```
+
+也可以单独顶一个用户（不受休眠限制）：
 
 ```sh
 kubectl -n dsh-users set image deploy/dsh-bob \
@@ -372,8 +382,11 @@ kubectl -n dsh-users rollout status deploy/dsh-bob
 
 注意事项：
 
-- **tag 必须变**。若只是重新构建同一个 tag，节点上有同名旧镜像，`IfNotPresent` 不会重新拉取。
-  所以「升级」天然等价于「改 `DSH_VERSION`」。
+- **tag 必须变**。若只是重新构建同一个 tag，节点上有同名旧镜像，`IfNotPresent`
+  不会重新拉取，结果是「推送成功、部署成功」但 pod 还在跑旧镜像，且不报错。
+  所以 `push-images.sh` 与 `make image` 在推送前会查一次 tag，已被占用就直接失败：
+  换 `IMAGE_TAG` 再推；确实要覆盖（例如刚才那次推送失败）加 `ALLOW_TAG_OVERWRITE=1`。
+  只改 `DSH_VERSION` 而不单独设 `IMAGE_TAG` 时 tag 会跟着变，不会踩到这个坑。
 - **升级前先看 profile 兼容性**：镜像构建时会执行 `dsh plugin --profile web add /opt/plugin`，
   若新版 DSH 改了插件 API，这一步会直接让构建失败——这正是我们希望的失败点（不是运行时才发现）。
 - 跨大版本时留意 `cordis.patch.yml` 里被重命名的条目。例如某版本起 `llm-deepseek` 不接受
@@ -432,4 +445,5 @@ kubectl -n dsh-system get pvc
 | [up.sh](up.sh) | 部署 DSH 全链路（自动识别 Kata / runc） |
 | [verify-isolation.sh](verify-isolation.sh) | runc 模式的容器级隔离验收（11 项） |
 | [push-images.sh](push-images.sh) | 本地构建并推送到 ACR（自动处理公网/VPC 域名） |
+| [refresh-users.sh](refresh-users.sh) | 把存量用户 Deployment 的镜像对齐到当前 `IMAGE_TAG`（默认只动已休眠的） |
 | [env.example](env.example) | 参数模板；复制成 `env` 后 `up.sh` 自动读取 |

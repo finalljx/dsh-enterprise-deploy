@@ -47,7 +47,18 @@ fi
 IMAGES="${IMAGES:-dsh-control dsh-router dsh-reaper dsh}"
 want() { case " $IMAGES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-say "2. 构建（${IMAGES}）"
+# 同名 tag 覆盖推送时节点不会重新拉取（IfNotPresent），「升级」会静默失效。
+# 放在构建之前：省得跑完几分钟的多阶段构建才失败。
+say "2. 检查镜像 tag 是否已被占用（${IMAGE_TAG}）"
+if [ -n "${SKIP_PUSH:-}" ]; then
+  echo "  跳过（SKIP_PUSH=1）"
+elif want dsh; then
+  hack/check-tag-unused.sh "$PUB_PREFIX/dsh:$IMAGE_TAG"
+else
+  echo "  跳过（本次不构建 dsh）"
+fi
+
+say "3. 构建（${IMAGES}）"
 want dsh-control && docker build --platform "$PLATFORM" -f control/Dockerfile --build-arg GOPROXY="$GOPROXY" \
   -t "$PUB_PREFIX/dsh-control:$REPO_TAG" ./control
 want dsh-router  && docker build --platform "$PLATFORM" -f router/Dockerfile \
@@ -60,7 +71,7 @@ want dsh && docker build --platform "$PLATFORM" -f Dockerfile.dev --build-arg MO
   --build-arg DSH_VERSION="$DSH_VERSION" \
   -t "$PUB_PREFIX/dsh:$IMAGE_TAG" .
 
-say "3. 校验目标架构"
+say "4. 校验目标架构"
 ARCH_FAIL=0
 for ref in "dsh-control:$REPO_TAG" "dsh-router:$REPO_TAG" "dsh-reaper:$REPO_TAG" "dsh:$IMAGE_TAG"; do
   case " $IMAGES " in
@@ -77,7 +88,7 @@ for ref in "dsh-control:$REPO_TAG" "dsh-router:$REPO_TAG" "dsh-reaper:$REPO_TAG"
 done
 [ "$ARCH_FAIL" = 1 ] && { echo "架构不匹配，先别推" >&2; exit 1; }
 
-say "4. 推送"
+say "5. 推送"
 if [ -n "${SKIP_PUSH:-}" ]; then
   echo "  SKIP_PUSH=1，不推送"
 else
@@ -87,7 +98,7 @@ else
   want dsh         && docker push "$PUB_PREFIX/dsh:$IMAGE_TAG"
 fi
 
-say "4. 集群侧会引用（VPC 端点）"
+say "6. 集群侧会引用（VPC 端点）"
 cat <<EOF
   $VPC_PREFIX/dsh:$IMAGE_TAG
   $VPC_PREFIX/dsh-control:$REPO_TAG
