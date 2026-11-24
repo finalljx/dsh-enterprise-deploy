@@ -156,7 +156,7 @@ DSH_HOME=/tmp/dsh-selftest dsh --profile headless "用一句话介绍你自己"
 ## 7.1 模型
 
 `image/profile/cordis.patch.yml` 里写的是内网网关 `https://llm-gw.corp/anthropic`，本机解析不到。
-`Dockerfile.dev` 用构建参数替换它：
+`image/Dockerfile` 用构建参数替换它：
 
 DeepSeek 官方服务就是 Messages 兼容端点，`MODEL_BASE_URL` 默认已经是它：
 
@@ -170,7 +170,7 @@ REQUIRE_MODEL_KEY=1 ./dev/up.sh                           # 没 key 直接失败
 换成内网网关时只改 `MODEL_BASE_URL`，其余不用动。
 
 `up.sh` 会把 key 写进 `dsh-model-token-alice` 这个 Secret，并以 `DEEPSEEK_API_KEY`
-注入容器（`Dockerfile.dev` 同时把 profile 的 `apiKeyEnv` 改成这个名字）。
+注入容器（`image/Dockerfile` 默认就用这个名字）。
 
 没有 key 也能启动：会打一条 WARN，身份/路由/回收都正常，只有真正发消息时会失败。
 

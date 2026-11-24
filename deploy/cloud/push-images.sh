@@ -65,8 +65,8 @@ want dsh-router  && docker build --platform "$PLATFORM" -f router/Dockerfile \
   -t "$PUB_PREFIX/dsh-router:$REPO_TAG" ./router
 want dsh-reaper  && docker build --platform "$PLATFORM" -f reaper/Dockerfile \
   -t "$PUB_PREFIX/dsh-reaper:$REPO_TAG" ./reaper
-# 用户镜像必须用 Dockerfile.dev：image/Dockerfile 依赖尚未发布的活动插件
-want dsh && docker build --platform "$PLATFORM" -f Dockerfile.dev --build-arg MODEL_BASE_URL="$MODEL_BASE_URL" \
+# 用户镜像：Dockerfile 默认走内网网关，这里用 MODEL_BASE_URL 换成真实可用的服务
+want dsh && docker build --platform "$PLATFORM" -f image/Dockerfile --build-arg MODEL_BASE_URL="$MODEL_BASE_URL" \
   --build-arg NPM_REGISTRY="$NPM_REGISTRY" \
   --build-arg DSH_VERSION="$DSH_VERSION" \
   -t "$PUB_PREFIX/dsh:$IMAGE_TAG" .
@@ -87,6 +87,19 @@ for ref in "dsh-control:$REPO_TAG" "dsh-router:$REPO_TAG" "dsh-reaper:$REPO_TAG"
   fi
 done
 [ "$ARCH_FAIL" = 1 ] && { echo "架构不匹配，先别推" >&2; exit 1; }
+
+# DSH 依赖平台相关的原生绑定；npm 装 optional 依赖失败只会警告，
+# 镜像"构建成功"但一启动就 "No usable native binding found" 崩溃。
+# 这里在推送前实际加载一次，坏镜像直接拦住。
+if want dsh; then
+  if docker run --rm --platform "$PLATFORM" --entrypoint node "$PUB_PREFIX/dsh:$IMAGE_TAG" \
+       -e 'require("/usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/node-addon-require-builtin")' >/dev/null 2>&1; then
+    echo "  OK   dsh 镜像里原生绑定可加载（$(docker run --rm --platform "$PLATFORM" --entrypoint node "$PUB_PREFIX/dsh:$IMAGE_TAG" -e 'console.log(process.platform+"/"+process.arch)')）"
+  else
+    echo "  FAIL dsh 镜像缺少平台原生绑定，启动会崩（No usable native binding found）" >&2
+    exit 1
+  fi
+fi
 
 say "5. 推送"
 if [ -n "${SKIP_PUSH:-}" ]; then

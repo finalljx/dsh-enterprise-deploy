@@ -221,7 +221,7 @@ docker build -f control/Dockerfile \
   -t "$CONTROL_IMG" ./control
 docker build -f router/Dockerfile  -t "$ROUTER_IMG"  ./router
 docker build -f reaper/Dockerfile  -t "$REAPER_IMG"  ./reaper
-docker build -f Dockerfile.dev \
+docker build -f image/Dockerfile \
   --build-arg MODEL_BASE_URL="${MODEL_BASE_URL:-https://api.deepseek.com/anthropic}" \
   -t "$DSH_IMG" .
 if [ "$REGISTRY_MODE" = 1 ]; then
